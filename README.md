@@ -28,11 +28,28 @@ cp .env.example .env
 
 The example values are development-only. When the Backend runs inside Docker, set `POSTGRES_HOST` in `.env` to a PostgreSQL host that is reachable from the container; the image does not assume a Compose service name or provision PostgreSQL itself.
 
-Run the service without Docker Compose:
+Create a Docker network shared by the one-shot migration command and the long-running service:
+
+```bash
+docker network create householdhub-local
+```
+
+Apply the committed migrations before starting the service:
+
+```bash
+docker run --rm \
+  --network householdhub-local \
+  --env-file .env \
+  householdhub-backend \
+  python manage.py migrate
+```
+
+Run the service without Docker Compose using the same environment and network:
 
 ```bash
 docker run --rm \
   --name householdhub-backend \
+  --network householdhub-local \
   --publish 8000:8000 \
   --env-file .env \
   householdhub-backend

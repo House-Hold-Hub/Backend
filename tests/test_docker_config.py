@@ -43,3 +43,14 @@ def test_backend_repository_has_no_full_stack_compose_definition() -> None:
     )
 
     assert all(not (ROOT / filename).exists() for filename in compose_filenames)
+
+
+def test_readme_runs_migrations_before_the_backend_service() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    migrate_command = "python manage.py migrate"
+    service_command = "--name householdhub-backend"
+
+    assert readme.index(migrate_command) < readme.index(service_command)
+    assert readme.count("--network householdhub-local") == 2
+    assert readme.count("--env-file .env") == 2
