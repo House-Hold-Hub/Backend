@@ -30,7 +30,7 @@ def test_custom_user_identity_model_contract() -> None:
 
 def test_initial_migration_contains_only_the_custom_user_model() -> None:
     migration_module = importlib.import_module("users.migrations.0001_initial")
-    migration_class = getattr(migration_module, "Migration")
+    migration_class = migration_module.Migration
 
     assert migration_class.initial is True
     assert migration_class.dependencies == [("auth", "0012_alter_user_first_name_max_length")]
