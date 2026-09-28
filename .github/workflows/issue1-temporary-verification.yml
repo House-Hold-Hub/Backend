@@ -35,6 +35,13 @@ jobs:
           echo '===BEGIN_DEV_LOCK==='
           cat /tmp/requirements-dev.lock
           echo '===END_DEV_LOCK==='
+      - name: Upload generated locks
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue1-locks
+          path: |
+            /tmp/requirements.lock
+            /tmp/requirements-dev.lock
       - name: Install locked dependencies
         run: python -m pip install -r /tmp/requirements-dev.lock
       - name: Dependency integrity
