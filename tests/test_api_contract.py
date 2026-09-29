@@ -46,6 +46,23 @@ class GetOnlyWidgetViewSet(ViewSet):
         return Response(status=201)
 
 
+class NestedRegexWidgetViewSet(WidgetViewSet):
+    lookup_value_regex = r"(?:foo\)|bar)"
+
+
+class RouteMethodOverrideView(APIView):
+    def get(self, request: Request) -> Response:
+        return Response([])
+
+    def post(self, request: Request) -> Response:
+        return Response(status=201)
+
+
+class TraceView(APIView):
+    def trace(self, request: Request) -> Response:
+        return Response(status=204)
+
+
 def test_contract_lock_pins_documentation_openapi() -> None:
     lock = load_contract_lock()
 
@@ -104,6 +121,15 @@ def test_route_collection_normalizes_nested_drf_router_regexes() -> None:
     ) == {Operation("GET", "/billing/widgets/{pk}")}
 
 
+def test_route_collection_handles_nested_drf_lookup_regex() -> None:
+    router = SimpleRouter()
+    router.register("widgets", NestedRegexWidgetViewSet, basename="widget")
+
+    assert collect_implemented_operations([path("api/v1/", include(router.urls))]) == {
+        Operation("GET", "/widgets/{pk}")
+    }
+
+
 def test_route_collection_respects_view_http_method_names() -> None:
     router = SimpleRouter()
     router.register("widgets", GetOnlyWidgetViewSet, basename="widget")
@@ -111,6 +137,34 @@ def test_route_collection_respects_view_http_method_names() -> None:
     assert collect_implemented_operations([path("api/v1/", include(router.urls))]) == {
         Operation("GET", "/widgets")
     }
+
+
+def test_route_collection_respects_initkwargs_http_method_names() -> None:
+    patterns = [
+        path(
+            "api/v1/widgets/",
+            RouteMethodOverrideView.as_view(http_method_names=["get"]),
+        )
+    ]
+
+    assert collect_implemented_operations(patterns) == {Operation("GET", "/widgets")}
+
+
+def test_contract_validation_includes_trace() -> None:
+    contract = """openapi: 3.0.3
+paths:
+  /trace:
+    trace:
+      operationId: traceEndpoint
+      responses: {}
+"""
+    contract_operations = parse_openapi_operations(contract)
+    implemented_operations = collect_implemented_operations(
+        [path("api/v1/trace/", TraceView.as_view())]
+    )
+
+    assert implemented_operations == {Operation("TRACE", "/trace")}
+    assert validate_implemented_operations(contract_operations, implemented_operations) == 1
 
 
 def test_contract_validation_canonicalizes_placeholder_names() -> None:
