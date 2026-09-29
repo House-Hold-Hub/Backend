@@ -58,6 +58,11 @@ class RouteMethodOverrideView(APIView):
         return Response(status=201)
 
 
+class HeadView(APIView):
+    def head(self, request: Request) -> Response:
+        return Response(status=204)
+
+
 class TraceView(APIView):
     def trace(self, request: Request) -> Response:
         return Response(status=204)
@@ -148,6 +153,23 @@ def test_route_collection_respects_initkwargs_http_method_names() -> None:
     ]
 
     assert collect_implemented_operations(patterns) == {Operation("GET", "/widgets")}
+
+
+def test_contract_validation_includes_head() -> None:
+    contract = """openapi: 3.0.3
+paths:
+  /head:
+    head:
+      operationId: headEndpoint
+      responses: {}
+"""
+    contract_operations = parse_openapi_operations(contract)
+    implemented_operations = collect_implemented_operations(
+        [path("api/v1/head/", HeadView.as_view())]
+    )
+
+    assert implemented_operations == {Operation("HEAD", "/head")}
+    assert validate_implemented_operations(contract_operations, implemented_operations) == 1
 
 
 def test_contract_validation_includes_trace() -> None:
