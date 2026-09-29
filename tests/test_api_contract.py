@@ -117,7 +117,8 @@ def test_route_collection_normalizes_django_path_converters() -> None:
     ]
 
     assert collect_implemented_operations(patterns) == {
-        Operation("GET", "/widgets/{item_id}")
+        Operation("GET", "/widgets/{item_id}"),
+        Operation("HEAD", "/widgets/{item_id}"),
     }
 
 
@@ -128,7 +129,10 @@ def test_route_collection_normalizes_nested_drf_router_regexes() -> None:
 
     assert collect_implemented_operations(
         [path("api/v1/", include(nested_patterns))]
-    ) == {Operation("GET", "/billing/widgets/{pk}")}
+    ) == {
+        Operation("GET", "/billing/widgets/{pk}"),
+        Operation("HEAD", "/billing/widgets/{pk}"),
+    }
 
 
 def test_route_collection_handles_nested_drf_lookup_regex() -> None:
@@ -136,7 +140,8 @@ def test_route_collection_handles_nested_drf_lookup_regex() -> None:
     router.register("widgets", NestedRegexWidgetViewSet, basename="widget")
 
     assert collect_implemented_operations([path("api/v1/", include(router.urls))]) == {
-        Operation("GET", "/widgets/{pk}")
+        Operation("GET", "/widgets/{pk}"),
+        Operation("HEAD", "/widgets/{pk}"),
     }
 
 
@@ -149,7 +154,10 @@ def test_route_collection_normalizes_default_router_format_suffixes() -> None:
         operation for operation in operations if operation.path.startswith("/widgets")
     }
 
-    assert widget_operations == {Operation("GET", "/widgets/{pk}")}
+    assert widget_operations == {
+        Operation("GET", "/widgets/{pk}"),
+        Operation("HEAD", "/widgets/{pk}"),
+    }
 
 
 def test_route_collection_respects_view_http_method_names() -> None:
