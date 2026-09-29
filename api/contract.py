@@ -254,9 +254,22 @@ def _callback_methods(callback: Any) -> set[str]:
         if isinstance(method, str)
     }
 
+    methods = {
+        method.upper()
+        for method in HTTP_METHODS
+        if (
+            method in allowed_methods
+            and callable(getattr(view_class, method, None))
+            and not (
+                method == "options"
+                and getattr(view_class, method, None) is APIView.options
+            )
+        )
+    }
+
     actions = getattr(callback, "actions", None)
     if isinstance(actions, dict):
-        methods = {
+        methods.update(
             method.upper()
             for method in actions
             if (
@@ -264,20 +277,7 @@ def _callback_methods(callback: Any) -> set[str]:
                 and method.lower() in HTTP_METHODS
                 and method.lower() in allowed_methods
             )
-        }
-    else:
-        methods = {
-            method.upper()
-            for method in HTTP_METHODS
-            if (
-                method in allowed_methods
-                and callable(getattr(view_class, method, None))
-                and not (
-                    method == "options"
-                    and getattr(view_class, method, None) is APIView.options
-                )
-            )
-        }
+        )
 
     if "head" in allowed_methods and "GET" in methods:
         methods.add("HEAD")
