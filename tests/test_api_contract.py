@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from django.urls import include, path
+from django.urls import include, path, re_path
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter, SimpleRouter
@@ -228,6 +228,23 @@ def test_route_collection_preserves_distinct_converter_domains() -> None:
         Operation("GET", "/widgets/{item_id}"),
         Operation("HEAD", "/widgets/{item_id}"),
         Operation("POST", "/widgets/{item_id}"),
+    }
+
+
+def test_route_collection_deduplicates_equivalent_compiled_matchers() -> None:
+    patterns = [
+        path(
+            "api/v1/widgets/<int:item_id>/",
+            RouteMethodOverrideView.as_view(http_method_names=["get"]),
+        ),
+        re_path(
+            r"^api/v1/widgets/(?P<widget_id>[0-9]+)/$",
+            PostUnknownView.as_view(),
+        ),
+    ]
+
+    assert collect_implemented_operations(patterns) == {
+        Operation("GET", "/widgets/{item_id}")
     }
 
 
