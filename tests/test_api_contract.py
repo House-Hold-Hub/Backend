@@ -10,6 +10,7 @@ from rest_framework.routers import DefaultRouter, SimpleRouter
 from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
 
+from api import contract as contract_module
 from api.contract import (
     ContractValidationError,
     Operation,
@@ -48,6 +49,14 @@ class GetOnlyWidgetViewSet(ViewSet):
 
 class NestedRegexWidgetViewSet(WidgetViewSet):
     lookup_value_regex = r"(?:foo\)|bar)"
+
+
+class TraceWidgetViewSet(ViewSet):
+    def list(self, request: Request) -> Response:
+        return Response([])
+
+    def trace(self, request: Request) -> Response:
+        return Response(status=204)
 
 
 class RouteMethodOverrideView(APIView):
@@ -157,6 +166,17 @@ def test_route_collection_normalizes_default_router_format_suffixes() -> None:
     assert widget_operations == {
         Operation("GET", "/widgets/{pk}"),
         Operation("HEAD", "/widgets/{pk}"),
+    }
+
+
+def test_route_collection_includes_direct_viewset_handlers() -> None:
+    router = SimpleRouter()
+    router.register("widgets", TraceWidgetViewSet, basename="widget")
+
+    assert collect_implemented_operations([path("api/v1/", include(router.urls))]) == {
+        Operation("GET", "/widgets"),
+        Operation("HEAD", "/widgets"),
+        Operation("TRACE", "/widgets"),
     }
 
 
@@ -278,7 +298,24 @@ def test_contract_validation_allows_incremental_implementation() -> None:
     )
 
 
-def test_current_backend_operations_match_pinned_openapi() -> None:
+def test_current_backend_operations_match_pinned_openapi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = """openapi: 3.0.3
+servers:
+  - url: /api/v1
+paths:
+  /fixture:
+    get:
+      operationId: fixtureOperation
+      responses: {}
+"""
+    monkeypatch.setattr(
+        contract_module,
+        "fetch_pinned_openapi",
+        lambda _lock: document,
+    )
+
     implemented_count, contract_count, revision = check_current_implementation()
 
     assert contract_count >= implemented_count
