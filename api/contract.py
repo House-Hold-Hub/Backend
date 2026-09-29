@@ -188,29 +188,36 @@ def _normalize_api_route(route: str) -> str | None:
 
 
 def _callback_methods(callback: Any) -> set[str]:
+    view_class = getattr(callback, "cls", None)
+    if view_class is None:
+        raise ContractValidationError(
+            "Every /api/v1 route must expose discoverable DRF HTTP methods "
+            "for contract validation."
+        )
+
+    allowed_methods = {
+        method.lower()
+        for method in getattr(view_class, "http_method_names", ())
+        if isinstance(method, str)
+    }
+
     actions = getattr(callback, "actions", None)
     if isinstance(actions, dict):
-        methods = {
+        return {
             method.upper()
             for method in actions
-            if isinstance(method, str) and method.lower() in HTTP_METHODS
+            if (
+                isinstance(method, str)
+                and method.lower() in HTTP_METHODS
+                and method.lower() in allowed_methods
+            )
         }
-        if methods:
-            return methods
 
-    view_class = getattr(callback, "cls", None)
-    if view_class is not None:
-        methods = {
-            method.upper()
-            for method in HTTP_METHODS
-            if callable(getattr(view_class, method, None))
-        }
-        if methods:
-            return methods
-
-    raise ContractValidationError(
-        "Every /api/v1 route must expose discoverable DRF HTTP methods for contract validation."
-    )
+    return {
+        method.upper()
+        for method in HTTP_METHODS
+        if method in allowed_methods and callable(getattr(view_class, method, None))
+    }
 
 
 def collect_implemented_operations(
@@ -224,7 +231,8 @@ def collect_implemented_operations(
         prefix: str = "",
     ) -> None:
         for entry in entries:
-            route = prefix + str(entry.pattern)
+            route_segment = str(entry.pattern).removeprefix("^").removesuffix("$")
+            route = prefix + route_segment
             if isinstance(entry, URLResolver):
                 visit(entry.url_patterns, route)
                 continue
