@@ -169,6 +169,21 @@ def test_route_collection_normalizes_default_router_format_suffixes() -> None:
     }
 
 
+def test_route_collection_normalizes_path_router_format_suffixes() -> None:
+    router = DefaultRouter(use_regex_path=False)
+    router.register("widgets", WidgetViewSet, basename="widget")
+
+    operations = collect_implemented_operations([path("api/v1/", include(router.urls))])
+    widget_operations = {
+        operation for operation in operations if operation.path.startswith("/widgets")
+    }
+
+    assert widget_operations == {
+        Operation("GET", "/widgets/{pk}"),
+        Operation("HEAD", "/widgets/{pk}"),
+    }
+
+
 def test_route_collection_includes_direct_viewset_handlers() -> None:
     router = SimpleRouter()
     router.register("widgets", TraceWidgetViewSet, basename="widget")
