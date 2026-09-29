@@ -22,6 +22,9 @@ DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 _DRF_NAMED_GROUP_NAME_PATTERN = re.compile(r"\(\?P<[A-Za-z_]\w*>")
+_URL_LITERAL_ESCAPE_PATTERN = re.compile(r"\\([.\-_~:@!_DRF_NAMED_GROUP_NAME_PATTERN = re.compile(r"\(\?P<[A-Za-z_]\w*>")
+_PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
+'()*+,;=/])")
 _PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
 _DRF_FORMAT_SUFFIX = r"\.{format}/?"
 _DRF_PATH_FORMAT_SUFFIX = "<drf_format_suffix:format>"
@@ -289,6 +292,10 @@ def _replace_positional_groups(route: str) -> str:
     return "".join(parts)
 
 
+def _unescape_url_literals(route: str) -> str:
+    return _URL_LITERAL_ESCAPE_PATTERN.sub(r"\1", route)
+
+
 def _normalize_api_route(route: str) -> str | None:
     if not route.startswith(API_PREFIX):
         return None
@@ -302,6 +309,7 @@ def _normalize_api_route(route: str) -> str | None:
     elif normalized.endswith(_DRF_PATH_FORMAT_SUFFIX):
         normalized = normalized[: -len(_DRF_PATH_FORMAT_SUFFIX)]
     normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", normalized)
+    normalized = _unescape_url_literals(normalized)
     return "/" + normalized if normalized else "/"
 
 
@@ -311,7 +319,7 @@ def _pattern_match_signature(
     compiled_regex = pattern.regex
     regex = compiled_regex.pattern
     regex = regex.removeprefix("^").removesuffix(r"\Z").removesuffix("$")
-    canonical_regex = _DRF_NAMED_GROUP_NAME_PATTERN.sub("(?P<_>", regex)
+    canonical_regex = _DRF_NAMED_GROUP_NAME_PATTERN.sub("(", regex)
 
     converters = getattr(pattern, "converters", {})
     custom_converter_bindings = tuple(
