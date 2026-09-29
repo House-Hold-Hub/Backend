@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from django.urls import include, path, re_path
+from django.urls import include, path, re_path, register_converter
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter, SimpleRouter
@@ -20,6 +20,33 @@ from api.contract import (
     parse_openapi_operations,
     validate_implemented_operations,
 )
+
+
+class EvenNumberConverter:
+    regex = r"[0-9]+"
+
+    def to_python(self, value: str) -> int:
+        number = int(value)
+        if number % 2:
+            raise ValueError
+        return number
+
+    def to_url(self, value: object) -> str:
+        return str(value)
+
+
+class AnyNumberConverter:
+    regex = r"[0-9]+"
+
+    def to_python(self, value: str) -> int:
+        return int(value)
+
+    def to_url(self, value: object) -> str:
+        return str(value)
+
+
+register_converter(EvenNumberConverter, "even_number")
+register_converter(AnyNumberConverter, "any_number")
 
 
 class GetWidgetView(APIView):
@@ -260,6 +287,24 @@ def test_route_collection_deduplicates_equivalent_compiled_matchers() -> None:
 
     assert collect_implemented_operations(patterns) == {
         Operation("GET", "/widgets/{item_id}")
+    }
+
+
+def test_route_collection_preserves_custom_converter_semantics() -> None:
+    patterns = [
+        path(
+            "api/v1/widgets/<even_number:item_id>/",
+            RouteMethodOverrideView.as_view(http_method_names=["get"]),
+        ),
+        path(
+            "api/v1/widgets/<any_number:item_id>/",
+            PostUnknownView.as_view(),
+        ),
+    ]
+
+    assert collect_implemented_operations(patterns) == {
+        Operation("GET", "/widgets/{item_id}"),
+        Operation("POST", "/widgets/{item_id}"),
     }
 
 
