@@ -1,0 +1,5 @@
+[contract]
+repository = "House-Hold-Hub/Documentation"
+revision = "e4199c51e11508458dfe15949e2b5672af70780f"
+path = "api/openapi.yaml"
+git_blob_sha = "c9babbe1f2b4698ebd7227f99fad03f7cb5c94a6"
