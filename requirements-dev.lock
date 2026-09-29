@@ -58,7 +58,7 @@ pytest==9.1.1
 pytest-django==4.14.0
     # via -r requirements-dev.in
 pyyaml==6.0.3
-    # via -r requirements-dev.in
+    # via -r requirements.in
 ruff==0.16.8
     # via -r requirements-dev.in
 sqlparse==0.6.0
