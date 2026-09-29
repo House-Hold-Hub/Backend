@@ -301,11 +301,22 @@ def test_route_collection_preserves_custom_converter_semantics() -> None:
             PostUnknownView.as_view(),
         ),
     ]
+    implemented_operations = collect_implemented_operations(patterns)
 
-    assert collect_implemented_operations(patterns) == {
+    assert implemented_operations == {
         Operation("GET", "/widgets/{item_id}"),
         Operation("POST", "/widgets/{item_id}"),
     }
+    assert (
+        validate_implemented_operations(
+            {
+                Operation("GET", "/widgets/{item_id}"): "getWidget",
+                Operation("POST", "/widgets/{item_id}"): "createWidget",
+            },
+            implemented_operations,
+        )
+        == 2
+    )
 
 
 def test_contract_validation_includes_head() -> None:
