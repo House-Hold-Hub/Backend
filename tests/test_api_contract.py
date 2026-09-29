@@ -374,6 +374,42 @@ def test_route_collection_normalizes_positional_regex_captures() -> None:
     )
 
 
+def test_route_collection_unescapes_literal_regex_tokens() -> None:
+    patterns = [
+        re_path(
+            r"^api/v1/reports/summary\.json/$",
+            RouteMethodOverrideView.as_view(http_method_names=["get"]),
+        )
+    ]
+    implemented_operations = collect_implemented_operations(patterns)
+
+    assert implemented_operations == {Operation("GET", "/reports/summary.json")}
+    assert (
+        validate_implemented_operations(
+            {Operation("GET", "/reports/summary.json"): "getSummary"},
+            implemented_operations,
+        )
+        == 1
+    )
+
+
+def test_route_collection_deduplicates_named_and_positional_captures() -> None:
+    patterns = [
+        re_path(
+            r"^api/v1/widgets/([0-9]+)/$",
+            PositionalWidgetView.as_view(),
+        ),
+        re_path(
+            r"^api/v1/widgets/(?P<item_id>[0-9]+)/$",
+            PostUnknownView.as_view(),
+        ),
+    ]
+
+    assert collect_implemented_operations(patterns) == {
+        Operation("GET", "/widgets/{arg1}")
+    }
+
+
 def test_contract_validation_includes_head() -> None:
     contract = """openapi: 3.0.3
 paths:
