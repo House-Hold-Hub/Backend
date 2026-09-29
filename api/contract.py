@@ -11,6 +11,8 @@ from urllib.request import urlopen
 from django.urls import URLPattern, URLResolver, get_resolver
 
 API_PREFIX = "api/v1/"
+CANONICAL_CONTRACT_REPOSITORY = "House-Hold-Hub/Documentation"
+CANONICAL_CONTRACT_PATH = "api/openapi.yaml"
 HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
@@ -20,7 +22,6 @@ _METHOD_PATTERN = re.compile(r"^    (?P<method>get|post|put|patch|delete):\s*$")
 _OPERATION_ID_PATTERN = re.compile(r"^      operationId:\s*(?P<operation_id>\S+)\s*$")
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 class ContractValidationError(RuntimeError):
@@ -70,14 +71,16 @@ def load_contract_lock(path: Path | None = None) -> ContractLock:
         git_blob_sha=_require_string(contract, "git_blob_sha"),
     )
 
-    if not _REPOSITORY_PATTERN.fullmatch(lock.repository):
-        raise ContractValidationError("Contract repository must use owner/name form.")
+    if lock.repository != CANONICAL_CONTRACT_REPOSITORY:
+        raise ContractValidationError(
+            "Contract lock must reference House-Hold-Hub/Documentation."
+        )
+    if lock.path != CANONICAL_CONTRACT_PATH:
+        raise ContractValidationError("Contract lock must reference api/openapi.yaml.")
     if not _SHA_PATTERN.fullmatch(lock.revision):
         raise ContractValidationError("Contract revision must be a full 40-character commit SHA.")
     if not _SHA_PATTERN.fullmatch(lock.git_blob_sha):
         raise ContractValidationError("Contract blob SHA must be a full 40-character Git SHA.")
-    if lock.path.startswith("/") or ".." in Path(lock.path).parts:
-        raise ContractValidationError("Contract path must be a repository-relative safe path.")
 
     return lock
 
@@ -166,21 +169,27 @@ def _normalize_api_route(route: str) -> str | None:
 def _callback_methods(callback: Any) -> set[str]:
     actions = getattr(callback, "actions", None)
     if isinstance(actions, dict):
-        return {
+        methods = {
             method.upper()
             for method in actions
             if isinstance(method, str) and method.lower() in HTTP_METHODS
         }
+        if methods:
+            return methods
 
     view_class = getattr(callback, "cls", None)
-    if view_class is None:
-        return set()
+    if view_class is not None:
+        methods = {
+            method.upper()
+            for method in HTTP_METHODS
+            if callable(getattr(view_class, method, None))
+        }
+        if methods:
+            return methods
 
-    return {
-        method.upper()
-        for method in HTTP_METHODS
-        if callable(getattr(view_class, method, None))
-    }
+    raise ContractValidationError(
+        "Every /api/v1 route must expose discoverable DRF HTTP methods for contract validation."
+    )
 
 
 def collect_implemented_operations(
