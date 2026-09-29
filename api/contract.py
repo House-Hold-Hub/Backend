@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import re
 import tomllib
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, cast
+from typing import Any, cast
 from urllib.request import urlopen
 
 from django.urls import URLPattern, URLResolver, get_resolver
