@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
+_DRF_NAMED_GROUP_PATTERN = re.compile(r"\\(\\?P<(?P<name>[A-Za-z_]\\w*)>[^)]+\\)")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
