@@ -179,11 +179,11 @@ def _normalize_api_route(route: str) -> str | None:
 
     relative_route = route[len(API_PREFIX) :].strip()
     relative_route = relative_route.removeprefix("^").removesuffix("$").strip("/")
-    normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", relative_route)
     normalized = _DRF_NAMED_GROUP_PATTERN.sub(
         lambda match: f"{{{match.group('name')}}}",
-        normalized,
+        relative_route,
     )
+    normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", normalized)
     return "/" + normalized if normalized else "/"
 
 
