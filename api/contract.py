@@ -374,8 +374,6 @@ def _callback_methods(callback: Any) -> set[str]:
             )
         )
 
-    if "head" in allowed_methods and "GET" in methods:
-        methods.add("HEAD")
     return methods
 
 
