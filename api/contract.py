@@ -21,9 +21,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
-_DJANGO_ROUTE_SIGNATURE_PATTERN = re.compile(
-    r"(?<!\?P)<(?:(?P<converter>[^:<>]+):)?[^<>]+>"
-)
 _DRF_NAMED_GROUP_NAME_PATTERN = re.compile(r"\(\?P<[A-Za-z_]\w*>")
 _PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
 _DRF_FORMAT_SUFFIX = r"\.{format}/?"
@@ -239,12 +236,10 @@ def _normalize_api_route(route: str) -> str | None:
     return "/" + normalized if normalized else "/"
 
 
-def _route_match_signature(route: str) -> str:
-    signature = _DRF_NAMED_GROUP_NAME_PATTERN.sub("(?P<_>", route)
-    return _DJANGO_ROUTE_SIGNATURE_PATTERN.sub(
-        lambda match: f"<{match.group('converter') or 'str'}:_>",
-        signature,
-    )
+def _pattern_match_signature(pattern: Any) -> str:
+    regex = pattern.regex.pattern
+    regex = regex.removeprefix("^").removesuffix(r"\Z").removesuffix("$")
+    return _DRF_NAMED_GROUP_NAME_PATTERN.sub("(?P<_>", regex)
 
 
 def _callback_methods(callback: Any) -> set[str]:
@@ -306,22 +301,23 @@ def collect_implemented_operations(
     def visit(
         entries: Iterable[URLPattern | URLResolver],
         prefix: str = "",
+        matcher_prefix: str = "",
     ) -> None:
         for entry in entries:
             route_segment = str(entry.pattern).removeprefix("^").removesuffix("$")
             route = prefix + route_segment
+            matcher = matcher_prefix + _pattern_match_signature(entry.pattern)
             if isinstance(entry, URLResolver):
-                visit(entry.url_patterns, route)
+                visit(entry.url_patterns, route, matcher)
                 continue
 
             normalized_path = _normalize_api_route(route)
             if normalized_path is None:
                 continue
 
-            route_signature = _route_match_signature(route)
-            if route_signature in resolved_routes:
+            if matcher in resolved_routes:
                 continue
-            resolved_routes.add(route_signature)
+            resolved_routes.add(matcher)
 
             for method in _callback_methods(entry.callback):
                 operations.add(Operation(method, normalized_path))
