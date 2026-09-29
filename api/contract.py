@@ -24,6 +24,7 @@ _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 _DRF_NAMED_GROUP_NAME_PATTERN = re.compile(r"\(\?P<[A-Za-z_]\w*>")
 _PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
 _DRF_FORMAT_SUFFIX = r"\.{format}/?"
+_DRF_PATH_FORMAT_SUFFIX = "<drf_format_suffix:format>"
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -232,6 +233,8 @@ def _normalize_api_route(route: str) -> str | None:
     normalized = _replace_drf_named_groups(relative_route)
     if normalized.endswith(_DRF_FORMAT_SUFFIX):
         normalized = normalized[: -len(_DRF_FORMAT_SUFFIX)]
+    elif normalized.endswith(_DRF_PATH_FORMAT_SUFFIX):
+        normalized = normalized[: -len(_DRF_PATH_FORMAT_SUFFIX)]
     normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", normalized)
     return "/" + normalized if normalized else "/"
 
@@ -296,7 +299,7 @@ def collect_implemented_operations(
 ) -> set[Operation]:
     resolved_patterns = patterns if patterns is not None else get_resolver().url_patterns
     operations: set[Operation] = set()
-    resolved_routes: set[str] = set()
+    equivalent_matchers: set[str] = set()
 
     def visit(
         entries: Iterable[URLPattern | URLResolver],
@@ -315,9 +318,11 @@ def collect_implemented_operations(
             if normalized_path is None:
                 continue
 
-            if matcher in resolved_routes:
+            # First-match deduplication is intentionally limited to equivalent
+            # compiled matchers; arbitrary regex/converter containment is out of scope.
+            if matcher in equivalent_matchers:
                 continue
-            resolved_routes.add(matcher)
+            equivalent_matchers.add(matcher)
 
             for method in _callback_methods(entry.callback):
                 operations.add(Operation(method, normalized_path))
