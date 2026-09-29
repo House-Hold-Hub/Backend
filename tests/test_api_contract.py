@@ -36,6 +36,16 @@ class WidgetViewSet(ViewSet):
         return Response({"id": str(pk)})
 
 
+class GetOnlyWidgetViewSet(ViewSet):
+    http_method_names = ["get"]
+
+    def list(self, request: Request) -> Response:
+        return Response([])
+
+    def create(self, request: Request) -> Response:
+        return Response(status=201)
+
+
 def test_contract_lock_pins_documentation_openapi() -> None:
     lock = load_contract_lock()
 
@@ -84,12 +94,22 @@ def test_route_collection_normalizes_django_path_converters() -> None:
     }
 
 
-def test_route_collection_normalizes_drf_router_regexes() -> None:
+def test_route_collection_normalizes_nested_drf_router_regexes() -> None:
     router = SimpleRouter()
     router.register("widgets", WidgetViewSet, basename="widget")
+    nested_patterns = [path("billing/", include(router.urls))]
+
+    assert collect_implemented_operations(
+        [path("api/v1/", include(nested_patterns))]
+    ) == {Operation("GET", "/billing/widgets/{pk}")}
+
+
+def test_route_collection_respects_view_http_method_names() -> None:
+    router = SimpleRouter()
+    router.register("widgets", GetOnlyWidgetViewSet, basename="widget")
 
     assert collect_implemented_operations([path("api/v1/", include(router.urls))]) == {
-        Operation("GET", "/widgets/{pk}")
+        Operation("GET", "/widgets")
     }
 
 
