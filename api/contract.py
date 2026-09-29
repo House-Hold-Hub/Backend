@@ -11,16 +11,18 @@ from urllib.request import urlopen
 
 import yaml
 from django.urls import URLPattern, URLResolver, get_resolver
+from rest_framework.views import APIView
 
 API_PREFIX = "api/v1/"
 CANONICAL_CONTRACT_REPOSITORY = "House-Hold-Hub/Documentation"
 CANONICAL_CONTRACT_PATH = "api/openapi.yaml"
-HTTP_METHODS = ("get", "head", "post", "put", "patch", "delete", "trace")
+HTTP_METHODS = ("get", "head", "options", "post", "put", "patch", "delete", "trace")
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 _PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
+_DRF_FORMAT_SUFFIX = r"\.{format}/?"
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -227,6 +229,8 @@ def _normalize_api_route(route: str) -> str | None:
     relative_route = route[len(API_PREFIX) :].strip()
     relative_route = relative_route.removeprefix("^").removesuffix("$").strip("/")
     normalized = _replace_drf_named_groups(relative_route)
+    if normalized.endswith(_DRF_FORMAT_SUFFIX):
+        normalized = normalized[: -len(_DRF_FORMAT_SUFFIX)]
     normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", normalized)
     return "/" + normalized if normalized else "/"
 
@@ -265,7 +269,14 @@ def _callback_methods(callback: Any) -> set[str]:
     return {
         method.upper()
         for method in HTTP_METHODS
-        if method in allowed_methods and callable(getattr(view_class, method, None))
+        if (
+            method in allowed_methods
+            and callable(getattr(view_class, method, None))
+            and not (
+                method == "options"
+                and getattr(view_class, method, None) is APIView.options
+            )
+        )
     }
 
 
