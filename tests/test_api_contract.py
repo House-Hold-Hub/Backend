@@ -94,6 +94,13 @@ class RouteMethodOverrideView(APIView):
         return Response(status=201)
 
 
+class PositionalWidgetView(APIView):
+    http_method_names = ["get"]
+
+    def get(self, request: Request, item_id: object) -> Response:
+        return Response({"id": str(item_id)})
+
+
 class HeadView(APIView):
     def head(self, request: Request) -> Response:
         return Response(status=204)
@@ -316,6 +323,54 @@ def test_route_collection_preserves_custom_converter_semantics() -> None:
             implemented_operations,
         )
         == 2
+    )
+
+
+def test_route_collection_preserves_custom_converter_positions() -> None:
+    patterns = [
+        path(
+            "api/v1/pairs/<even_number:a>/<int:b>/",
+            RouteMethodOverrideView.as_view(http_method_names=["get"]),
+        ),
+        path(
+            "api/v1/pairs/<int:a>/<even_number:b>/",
+            PostUnknownView.as_view(),
+        ),
+    ]
+    implemented_operations = collect_implemented_operations(patterns)
+
+    assert implemented_operations == {
+        Operation("GET", "/pairs/{a}/{b}"),
+        Operation("POST", "/pairs/{a}/{b}"),
+    }
+    assert (
+        validate_implemented_operations(
+            {
+                Operation("GET", "/pairs/{first}/{second}"): "getPair",
+                Operation("POST", "/pairs/{first}/{second}"): "createPair",
+            },
+            implemented_operations,
+        )
+        == 2
+    )
+
+
+def test_route_collection_normalizes_positional_regex_captures() -> None:
+    patterns = [
+        re_path(
+            r"^api/v1/widgets/([0-9]+)/$",
+            PositionalWidgetView.as_view(),
+        )
+    ]
+    implemented_operations = collect_implemented_operations(patterns)
+
+    assert implemented_operations == {Operation("GET", "/widgets/{arg1}")}
+    assert (
+        validate_implemented_operations(
+            {Operation("GET", "/widgets/{widget_id}"): "getWidget"},
+            implemented_operations,
+        )
+        == 1
     )
 
 
