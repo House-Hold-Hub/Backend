@@ -200,6 +200,18 @@ def test_route_collection_respects_initkwargs_http_method_names() -> None:
     assert collect_implemented_operations(patterns) == {Operation("GET", "/widgets")}
 
 
+def test_route_collection_ignores_shadowed_duplicate_routes() -> None:
+    patterns = [
+        path(
+            "api/v1/widgets/",
+            RouteMethodOverrideView.as_view(http_method_names=["get"]),
+        ),
+        path("api/v1/widgets/", PostUnknownView.as_view()),
+    ]
+
+    assert collect_implemented_operations(patterns) == {Operation("GET", "/widgets")}
+
+
 def test_contract_validation_includes_head() -> None:
     contract = """openapi: 3.0.3
 paths:
