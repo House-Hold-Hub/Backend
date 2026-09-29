@@ -21,6 +21,10 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
+_DJANGO_ROUTE_SIGNATURE_PATTERN = re.compile(
+    r"<(?:(?P<converter>[^:<>]+):)?[^<>]+>"
+)
+_DRF_NAMED_GROUP_NAME_PATTERN = re.compile(r"\(\?P<[A-Za-z_]\w*>")
 _PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
 _DRF_FORMAT_SUFFIX = r"\.{format}/?"
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -235,6 +239,14 @@ def _normalize_api_route(route: str) -> str | None:
     return "/" + normalized if normalized else "/"
 
 
+def _route_match_signature(route: str) -> str:
+    signature = _DRF_NAMED_GROUP_NAME_PATTERN.sub("(?P<_>", route)
+    return _DJANGO_ROUTE_SIGNATURE_PATTERN.sub(
+        lambda match: f"<{match.group('converter') or 'str'}:_>",
+        signature,
+    )
+
+
 def _callback_methods(callback: Any) -> set[str]:
     view_class = getattr(callback, "cls", None)
     if view_class is None:
@@ -289,7 +301,7 @@ def collect_implemented_operations(
 ) -> set[Operation]:
     resolved_patterns = patterns if patterns is not None else get_resolver().url_patterns
     operations: set[Operation] = set()
-    resolved_paths: set[str] = set()
+    resolved_routes: set[str] = set()
 
     def visit(
         entries: Iterable[URLPattern | URLResolver],
@@ -306,10 +318,10 @@ def collect_implemented_operations(
             if normalized_path is None:
                 continue
 
-            route_shape = _PATH_PLACEHOLDER_PATTERN.sub("{}", normalized_path)
-            if route_shape in resolved_paths:
+            route_signature = _route_match_signature(route)
+            if route_signature in resolved_routes:
                 continue
-            resolved_paths.add(route_shape)
+            resolved_routes.add(route_signature)
 
             for method in _callback_methods(entry.callback):
                 operations.add(Operation(method, normalized_path))
