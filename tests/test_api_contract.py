@@ -113,6 +113,20 @@ def test_route_collection_respects_view_http_method_names() -> None:
     }
 
 
+def test_contract_validation_canonicalizes_placeholder_names() -> None:
+    contract_operations = {
+        Operation("GET", "/widgets/{widget_id}"): "getWidget",
+    }
+
+    assert (
+        validate_implemented_operations(
+            contract_operations,
+            {Operation("GET", "/widgets/{pk}")},
+        )
+        == 1
+    )
+
+
 def test_contract_validation_rejects_backend_only_operations() -> None:
     contract_operations = {
         Operation("GET", "/widgets/{item_id}"): "getWidget",
