@@ -15,12 +15,11 @@ from django.urls import URLPattern, URLResolver, get_resolver
 API_PREFIX = "api/v1/"
 CANONICAL_CONTRACT_REPOSITORY = "House-Hold-Hub/Documentation"
 CANONICAL_CONTRACT_PATH = "api/openapi.yaml"
-HTTP_METHODS = ("get", "post", "put", "patch", "delete")
+HTTP_METHODS = ("get", "post", "put", "patch", "delete", "trace")
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
-_DRF_NAMED_GROUP_PATTERN = re.compile(r"\(\?P<(?P<name>[A-Za-z_]\w*)>[^)]+\)")
 _PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -174,16 +173,60 @@ def contract_declares_api_v1(document: str) -> bool:
     return False
 
 
+def _replace_drf_named_groups(route: str) -> str:
+    parts: list[str] = []
+    index = 0
+
+    while True:
+        start = route.find("(?P<", index)
+        if start < 0:
+            parts.append(route[index:])
+            return "".join(parts)
+
+        parts.append(route[index:start])
+        name_end = route.find(">", start + 4)
+        if name_end < 0:
+            raise ContractValidationError("Malformed DRF named route group.")
+
+        name = route[start + 4 : name_end]
+        depth = 1
+        cursor = name_end + 1
+        escaped = False
+        in_character_class = False
+
+        while cursor < len(route):
+            character = route[cursor]
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == "[":
+                in_character_class = True
+            elif character == "]" and in_character_class:
+                in_character_class = False
+            elif not in_character_class:
+                if character == "(":
+                    depth += 1
+                elif character == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            cursor += 1
+
+        if depth != 0:
+            raise ContractValidationError("Malformed DRF named route group.")
+
+        parts.append(f"{{{name}}}")
+        index = cursor + 1
+
+
 def _normalize_api_route(route: str) -> str | None:
     if not route.startswith(API_PREFIX):
         return None
 
     relative_route = route[len(API_PREFIX) :].strip()
     relative_route = relative_route.removeprefix("^").removesuffix("$").strip("/")
-    normalized = _DRF_NAMED_GROUP_PATTERN.sub(
-        lambda match: f"{{{match.group('name')}}}",
-        relative_route,
-    )
+    normalized = _replace_drf_named_groups(relative_route)
     normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", normalized)
     return "/" + normalized if normalized else "/"
 
@@ -196,9 +239,14 @@ def _callback_methods(callback: Any) -> set[str]:
             "for contract validation."
         )
 
+    initkwargs = getattr(callback, "initkwargs", None)
+    configured_methods = getattr(view_class, "http_method_names", ())
+    if isinstance(initkwargs, dict) and "http_method_names" in initkwargs:
+        configured_methods = initkwargs["http_method_names"]
+
     allowed_methods = {
         method.lower()
-        for method in getattr(view_class, "http_method_names", ())
+        for method in configured_methods
         if isinstance(method, str)
     }
 
