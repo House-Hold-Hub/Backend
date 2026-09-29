@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from django.urls import include, path
 from rest_framework.request import Request
-from rest_framework.routers import SimpleRouter
 from rest_framework.response import Response
+from rest_framework.routers import SimpleRouter
 from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
 
