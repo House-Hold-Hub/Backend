@@ -23,6 +23,8 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "rest_framework",
+    "api.apps.ApiConfig",
     "users.apps.UsersConfig",
 ]
 
@@ -79,6 +81,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # This must be configured before the first migration is generated.
 AUTH_USER_MODEL = "users.User"
+
+REST_FRAMEWORK = {
+    "DEFAULT_PAGINATION_CLASS": "api.pagination.ApiPagination",
+    "PAGE_SIZE": 20,
+}
 
 # Same-origin frontend/API deployment is the canonical default. CORS is intentionally
 # not configured here; a cross-origin topology requires an explicit credential review.
