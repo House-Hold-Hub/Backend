@@ -348,6 +348,25 @@ def test_route_collection_preserves_custom_converter_positions() -> None:
     )
 
 
+def test_route_collection_preserves_path_literal_parentheses() -> None:
+    patterns = [
+        path(
+            "api/v1/reports/(draft)/",
+            RouteMethodOverrideView.as_view(http_method_names=["get"]),
+        )
+    ]
+    implemented_operations = collect_implemented_operations(patterns)
+
+    assert implemented_operations == {Operation("GET", "/reports/(draft)")}
+    assert (
+        validate_implemented_operations(
+            {Operation("GET", "/reports/(draft)"): "getDraftReport"},
+            implemented_operations,
+        )
+        == 1
+    )
+
+
 def test_route_collection_normalizes_positional_regex_captures() -> None:
     patterns = [
         re_path(
