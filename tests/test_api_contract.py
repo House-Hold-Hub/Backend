@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from django.urls import path
+from django.urls import include, path
 from rest_framework.request import Request
+from rest_framework.routers import SimpleRouter
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.viewsets import ViewSet
 
 from api.contract import (
     ContractValidationError,
@@ -27,6 +29,11 @@ class GetWidgetView(APIView):
 class PostUnknownView(APIView):
     def post(self, request: Request) -> Response:
         return Response(status=204)
+
+
+class WidgetViewSet(ViewSet):
+    def retrieve(self, request: Request, pk: object | None = None) -> Response:
+        return Response({"id": str(pk)})
 
 
 def test_contract_lock_pins_documentation_openapi() -> None:
@@ -74,6 +81,15 @@ def test_route_collection_normalizes_django_path_converters() -> None:
 
     assert collect_implemented_operations(patterns) == {
         Operation("GET", "/widgets/{item_id}")
+    }
+
+
+def test_route_collection_normalizes_drf_router_regexes() -> None:
+    router = SimpleRouter()
+    router.register("widgets", WidgetViewSet, basename="widget")
+
+    assert collect_implemented_operations([path("api/v1/", include(router.urls))]) == {
+        Operation("GET", "/widgets/{pk}")
     }
 
 
