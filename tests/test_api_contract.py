@@ -212,6 +212,25 @@ def test_route_collection_ignores_shadowed_duplicate_routes() -> None:
     assert collect_implemented_operations(patterns) == {Operation("GET", "/widgets")}
 
 
+def test_route_collection_preserves_distinct_converter_domains() -> None:
+    patterns = [
+        path(
+            "api/v1/widgets/<uuid:item_id>/",
+            GetWidgetView.as_view(),
+        ),
+        path(
+            "api/v1/widgets/<int:item_id>/",
+            PostUnknownView.as_view(),
+        ),
+    ]
+
+    assert collect_implemented_operations(patterns) == {
+        Operation("GET", "/widgets/{item_id}"),
+        Operation("HEAD", "/widgets/{item_id}"),
+        Operation("POST", "/widgets/{item_id}"),
+    }
+
+
 def test_contract_validation_includes_head() -> None:
     contract = """openapi: 3.0.3
 paths:
