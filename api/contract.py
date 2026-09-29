@@ -22,7 +22,7 @@ DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 _DJANGO_ROUTE_SIGNATURE_PATTERN = re.compile(
-    r"<(?:(?P<converter>[^:<>]+):)?[^<>]+>"
+    r"(?<!\?P)<(?:(?P<converter>[^:<>]+):)?[^<>]+>"
 )
 _DRF_NAMED_GROUP_NAME_PATTERN = re.compile(r"\(\?P<[A-Za-z_]\w*>")
 _PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
