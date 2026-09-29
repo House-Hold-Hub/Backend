@@ -11,6 +11,7 @@ from urllib.request import urlopen
 
 import yaml
 from django.urls import URLPattern, URLResolver, get_resolver
+from django.urls.resolvers import RegexPattern
 from rest_framework.views import APIView
 
 API_PREFIX = "api/v1/"
@@ -296,21 +297,27 @@ def _unescape_url_literals(route: str) -> str:
     return _URL_LITERAL_ESCAPE_PATTERN.sub(r"\1", route)
 
 
+def _normalize_route_segment(pattern: Any) -> str:
+    normalized = str(pattern).removeprefix("^").removesuffix("$")
+
+    if isinstance(pattern, RegexPattern):
+        normalized = _replace_drf_named_groups(normalized)
+        normalized = _replace_positional_groups(normalized)
+        if normalized.endswith(_DRF_FORMAT_SUFFIX):
+            normalized = normalized[: -len(_DRF_FORMAT_SUFFIX)]
+        normalized = _unescape_url_literals(normalized)
+    elif normalized.endswith(_DRF_PATH_FORMAT_SUFFIX):
+        normalized = normalized[: -len(_DRF_PATH_FORMAT_SUFFIX)]
+
+    return _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", normalized)
+
+
 def _normalize_api_route(route: str) -> str | None:
     if not route.startswith(API_PREFIX):
         return None
 
-    relative_route = route[len(API_PREFIX) :].strip()
-    relative_route = relative_route.removeprefix("^").removesuffix("$").strip("/")
-    normalized = _replace_drf_named_groups(relative_route)
-    normalized = _replace_positional_groups(normalized)
-    if normalized.endswith(_DRF_FORMAT_SUFFIX):
-        normalized = normalized[: -len(_DRF_FORMAT_SUFFIX)]
-    elif normalized.endswith(_DRF_PATH_FORMAT_SUFFIX):
-        normalized = normalized[: -len(_DRF_PATH_FORMAT_SUFFIX)]
-    normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", normalized)
-    normalized = _unescape_url_literals(normalized)
-    return "/" + normalized if normalized else "/"
+    relative_route = route[len(API_PREFIX) :].strip().strip("/")
+    return "/" + relative_route if relative_route else "/"
 
 
 def _pattern_match_signature(
@@ -394,7 +401,7 @@ def collect_implemented_operations(
         group_offset: int = 0,
     ) -> None:
         for entry in entries:
-            route_segment = str(entry.pattern).removeprefix("^").removesuffix("$")
+            route_segment = _normalize_route_segment(entry.pattern)
             route = prefix + route_segment
             pattern_regex, converter_bindings, group_count = (
                 _pattern_match_signature(entry.pattern)
