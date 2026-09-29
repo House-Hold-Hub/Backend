@@ -21,5 +21,7 @@ psycopg==3.3.6
     # via -r requirements.in
 psycopg-binary==3.3.6
     # via psycopg
+pyyaml==6.0.3
+    # via -r requirements.in
 sqlparse==0.6.0
     # via django
