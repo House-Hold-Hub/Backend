@@ -15,7 +15,7 @@ from django.urls import URLPattern, URLResolver, get_resolver
 API_PREFIX = "api/v1/"
 CANONICAL_CONTRACT_REPOSITORY = "House-Hold-Hub/Documentation"
 CANONICAL_CONTRACT_PATH = "api/openapi.yaml"
-HTTP_METHODS = ("get", "post", "put", "patch", "delete", "trace")
+HTTP_METHODS = ("get", "head", "post", "put", "patch", "delete", "trace")
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
