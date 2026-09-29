@@ -224,6 +224,71 @@ def _replace_drf_named_groups(route: str) -> str:
         index = cursor + 1
 
 
+def _replace_positional_groups(route: str) -> str:
+    parts: list[str] = []
+    index = 0
+    placeholder_index = 1
+    escaped = False
+    in_character_class = False
+
+    while index < len(route):
+        character = route[index]
+        if escaped:
+            parts.append(character)
+            escaped = False
+            index += 1
+            continue
+        if character == "\\":
+            parts.append(character)
+            escaped = True
+            index += 1
+            continue
+        if character == "[":
+            in_character_class = True
+        elif character == "]" and in_character_class:
+            in_character_class = False
+
+        if (
+            character == "("
+            and not in_character_class
+            and not route.startswith("(?", index)
+        ):
+            depth = 1
+            cursor = index + 1
+            nested_escaped = False
+            nested_character_class = False
+            while cursor < len(route):
+                nested = route[cursor]
+                if nested_escaped:
+                    nested_escaped = False
+                elif nested == "\\":
+                    nested_escaped = True
+                elif nested == "[":
+                    nested_character_class = True
+                elif nested == "]" and nested_character_class:
+                    nested_character_class = False
+                elif not nested_character_class:
+                    if nested == "(":
+                        depth += 1
+                    elif nested == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                cursor += 1
+            if depth != 0:
+                raise ContractValidationError("Malformed positional route group.")
+
+            parts.append(f"{{arg{placeholder_index}}}")
+            placeholder_index += 1
+            index = cursor + 1
+            continue
+
+        parts.append(character)
+        index += 1
+
+    return "".join(parts)
+
+
 def _normalize_api_route(route: str) -> str | None:
     if not route.startswith(API_PREFIX):
         return None
@@ -231,6 +296,7 @@ def _normalize_api_route(route: str) -> str | None:
     relative_route = route[len(API_PREFIX) :].strip()
     relative_route = relative_route.removeprefix("^").removesuffix("$").strip("/")
     normalized = _replace_drf_named_groups(relative_route)
+    normalized = _replace_positional_groups(normalized)
     if normalized.endswith(_DRF_FORMAT_SUFFIX):
         normalized = normalized[: -len(_DRF_FORMAT_SUFFIX)]
     elif normalized.endswith(_DRF_PATH_FORMAT_SUFFIX):
@@ -241,18 +307,19 @@ def _normalize_api_route(route: str) -> str | None:
 
 def _pattern_match_signature(
     pattern: Any,
-) -> tuple[str, tuple[type[Any], ...]]:
-    regex = pattern.regex.pattern
+) -> tuple[str, tuple[tuple[int, type[Any]], ...], int]:
+    compiled_regex = pattern.regex
+    regex = compiled_regex.pattern
     regex = regex.removeprefix("^").removesuffix(r"\Z").removesuffix("$")
     canonical_regex = _DRF_NAMED_GROUP_NAME_PATTERN.sub("(?P<_>", regex)
 
     converters = getattr(pattern, "converters", {})
-    custom_converter_types = tuple(
-        type(converter)
-        for converter in converters.values()
+    custom_converter_bindings = tuple(
+        (compiled_regex.groupindex[name], type(converter))
+        for name, converter in converters.items()
         if type(converter).__module__ != "django.urls.converters"
     )
-    return canonical_regex, custom_converter_types
+    return canonical_regex, custom_converter_bindings, compiled_regex.groups
 
 
 def _callback_methods(callback: Any) -> set[str]:
@@ -309,24 +376,38 @@ def collect_implemented_operations(
 ) -> set[Operation]:
     resolved_patterns = patterns if patterns is not None else get_resolver().url_patterns
     operations: set[Operation] = set()
-    equivalent_matchers: set[tuple[str, tuple[type[Any], ...]]] = set()
+    equivalent_matchers: set[
+        tuple[str, tuple[tuple[int, type[Any]], ...]]
+    ] = set()
 
     def visit(
         entries: Iterable[URLPattern | URLResolver],
         prefix: str = "",
         matcher_prefix: str = "",
-        converter_prefix: tuple[type[Any], ...] = (),
+        converter_prefix: tuple[tuple[int, type[Any]], ...] = (),
+        group_offset: int = 0,
     ) -> None:
         for entry in entries:
             route_segment = str(entry.pattern).removeprefix("^").removesuffix("$")
             route = prefix + route_segment
-            pattern_regex, converter_types = _pattern_match_signature(entry.pattern)
+            pattern_regex, converter_bindings, group_count = (
+                _pattern_match_signature(entry.pattern)
+            )
             matcher = (
                 matcher_prefix + pattern_regex,
-                converter_prefix + converter_types,
+                converter_prefix
+                + tuple(
+                    (group_offset + position, converter_type)
+                    for position, converter_type in converter_bindings
+                ),
             )
             if isinstance(entry, URLResolver):
-                visit(entry.url_patterns, route, *matcher)
+                visit(
+                    entry.url_patterns,
+                    route,
+                    *matcher,
+                    group_offset + group_count,
+                )
                 continue
 
             normalized_path = _normalize_api_route(route)
