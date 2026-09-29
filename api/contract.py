@@ -239,10 +239,20 @@ def _normalize_api_route(route: str) -> str | None:
     return "/" + normalized if normalized else "/"
 
 
-def _pattern_match_signature(pattern: Any) -> str:
+def _pattern_match_signature(
+    pattern: Any,
+) -> tuple[str, tuple[type[Any], ...]]:
     regex = pattern.regex.pattern
     regex = regex.removeprefix("^").removesuffix(r"\Z").removesuffix("$")
-    return _DRF_NAMED_GROUP_NAME_PATTERN.sub("(?P<_>", regex)
+    canonical_regex = _DRF_NAMED_GROUP_NAME_PATTERN.sub("(?P<_>", regex)
+
+    converters = getattr(pattern, "converters", {})
+    custom_converter_types = tuple(
+        type(converter)
+        for converter in converters.values()
+        if type(converter).__module__ != "django.urls.converters"
+    )
+    return canonical_regex, custom_converter_types
 
 
 def _callback_methods(callback: Any) -> set[str]:
@@ -299,19 +309,24 @@ def collect_implemented_operations(
 ) -> set[Operation]:
     resolved_patterns = patterns if patterns is not None else get_resolver().url_patterns
     operations: set[Operation] = set()
-    equivalent_matchers: set[str] = set()
+    equivalent_matchers: set[tuple[str, tuple[type[Any], ...]]] = set()
 
     def visit(
         entries: Iterable[URLPattern | URLResolver],
         prefix: str = "",
         matcher_prefix: str = "",
+        converter_prefix: tuple[type[Any], ...] = (),
     ) -> None:
         for entry in entries:
             route_segment = str(entry.pattern).removeprefix("^").removesuffix("$")
             route = prefix + route_segment
-            matcher = matcher_prefix + _pattern_match_signature(entry.pattern)
+            pattern_regex, converter_types = _pattern_match_signature(entry.pattern)
+            matcher = (
+                matcher_prefix + pattern_regex,
+                converter_prefix + converter_types,
+            )
             if isinstance(entry, URLResolver):
-                visit(entry.url_patterns, route, matcher)
+                visit(entry.url_patterns, route, *matcher)
                 continue
 
             normalized_path = _normalize_api_route(route)
@@ -319,7 +334,8 @@ def collect_implemented_operations(
                 continue
 
             # First-match deduplication is intentionally limited to equivalent
-            # compiled matchers; arbitrary regex/converter containment is out of scope.
+            # compiled matchers and custom-converter semantics; arbitrary containment
+            # between distinct regexes or converters is out of scope.
             if matcher in equivalent_matchers:
                 continue
             equivalent_matchers.add(matcher)
