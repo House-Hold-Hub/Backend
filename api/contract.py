@@ -289,6 +289,7 @@ def collect_implemented_operations(
 ) -> set[Operation]:
     resolved_patterns = patterns if patterns is not None else get_resolver().url_patterns
     operations: set[Operation] = set()
+    resolved_paths: set[str] = set()
 
     def visit(
         entries: Iterable[URLPattern | URLResolver],
@@ -304,6 +305,11 @@ def collect_implemented_operations(
             normalized_path = _normalize_api_route(route)
             if normalized_path is None:
                 continue
+
+            route_shape = _PATH_PLACEHOLDER_PATTERN.sub("{}", normalized_path)
+            if route_shape in resolved_paths:
+                continue
+            resolved_paths.add(route_shape)
 
             for method in _callback_methods(entry.callback):
                 operations.add(Operation(method, normalized_path))
