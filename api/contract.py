@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
-_DRF_NAMED_GROUP_PATTERN = re.compile(r"\\(\\?P<(?P<name>[A-Za-z_]\\w*)>[^)]+\\)")
+_DRF_NAMED_GROUP_PATTERN = re.compile(r"\(\?P<(?P<name>[A-Za-z_]\w*)>[^)]+\)")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -179,7 +179,7 @@ def _normalize_api_route(route: str) -> str | None:
 
     relative_route = route[len(API_PREFIX) :].strip()
     relative_route = relative_route.removeprefix("^").removesuffix("$").strip("/")
-    normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\\1}", relative_route)
+    normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", relative_route)
     normalized = _DRF_NAMED_GROUP_PATTERN.sub(
         lambda match: f"{{{match.group('name')}}}",
         normalized,
