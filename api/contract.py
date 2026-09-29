@@ -177,8 +177,13 @@ def _normalize_api_route(route: str) -> str | None:
     if not route.startswith(API_PREFIX):
         return None
 
-    relative_route = route[len(API_PREFIX) :].strip("/")
-    normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\1}", relative_route)
+    relative_route = route[len(API_PREFIX) :].strip()
+    relative_route = relative_route.removeprefix("^").removesuffix("$").strip("/")
+    normalized = _DJANGO_CONVERTER_PATTERN.sub(r"{\\1}", relative_route)
+    normalized = _DRF_NAMED_GROUP_PATTERN.sub(
+        lambda match: f"{{{match.group('name')}}}",
+        normalized,
+    )
     return "/" + normalized if normalized else "/"
 
 
