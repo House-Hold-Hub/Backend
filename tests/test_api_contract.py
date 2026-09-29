@@ -6,7 +6,7 @@ import pytest
 from django.urls import include, path
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.routers import SimpleRouter
+from rest_framework.routers import DefaultRouter, SimpleRouter
 from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
 
@@ -60,6 +60,11 @@ class RouteMethodOverrideView(APIView):
 
 class HeadView(APIView):
     def head(self, request: Request) -> Response:
+        return Response(status=204)
+
+
+class OptionsView(APIView):
+    def options(self, request: Request, *args: object, **kwargs: object) -> Response:
         return Response(status=204)
 
 
@@ -135,6 +140,18 @@ def test_route_collection_handles_nested_drf_lookup_regex() -> None:
     }
 
 
+def test_route_collection_normalizes_default_router_format_suffixes() -> None:
+    router = DefaultRouter()
+    router.register("widgets", WidgetViewSet, basename="widget")
+
+    operations = collect_implemented_operations([path("api/v1/", include(router.urls))])
+    widget_operations = {
+        operation for operation in operations if operation.path.startswith("/widgets")
+    }
+
+    assert widget_operations == {Operation("GET", "/widgets/{pk}")}
+
+
 def test_route_collection_respects_view_http_method_names() -> None:
     router = SimpleRouter()
     router.register("widgets", GetOnlyWidgetViewSet, basename="widget")
@@ -169,6 +186,23 @@ paths:
     )
 
     assert implemented_operations == {Operation("HEAD", "/head")}
+    assert validate_implemented_operations(contract_operations, implemented_operations) == 1
+
+
+def test_contract_validation_includes_explicit_options() -> None:
+    contract = """openapi: 3.0.3
+paths:
+  /options:
+    options:
+      operationId: optionsEndpoint
+      responses: {}
+"""
+    contract_operations = parse_openapi_operations(contract)
+    implemented_operations = collect_implemented_operations(
+        [path("api/v1/options/", OptionsView.as_view())]
+    )
+
+    assert implemented_operations == {Operation("OPTIONS", "/options")}
     assert validate_implemented_operations(contract_operations, implemented_operations) == 1
 
 
