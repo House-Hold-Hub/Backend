@@ -9,18 +9,16 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.request import urlopen
 
+import yaml
 from django.urls import URLPattern, URLResolver, get_resolver
 
 API_PREFIX = "api/v1/"
 CANONICAL_CONTRACT_REPOSITORY = "House-Hold-Hub/Documentation"
 CANONICAL_CONTRACT_PATH = "api/openapi.yaml"
-HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
+HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
-_PATH_PATTERN = re.compile(r"^  ['\"]?(?P<path>/[^'\"]+)['\"]?:\s*$")
-_METHOD_PATTERN = re.compile(r"^    (?P<method>get|post|put|patch|delete):\s*$")
-_OPERATION_ID_PATTERN = re.compile(r"^      operationId:\s*(?P<operation_id>\S+)\s*$")
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -105,57 +103,73 @@ def fetch_pinned_openapi(lock: ContractLock) -> str:
     return payload.decode("utf-8")
 
 
+def _load_openapi(document: str) -> Mapping[str, object]:
+    try:
+        raw_document = yaml.safe_load(document)
+    except yaml.YAMLError as exc:
+        raise ContractValidationError("The pinned OpenAPI document is invalid YAML.") from exc
+
+    if not isinstance(raw_document, dict):
+        raise ContractValidationError("The pinned OpenAPI document must be a mapping.")
+
+    return cast(Mapping[str, object], raw_document)
+
+
 def parse_openapi_operations(document: str) -> dict[Operation, str]:
-    in_paths = False
-    current_path: str | None = None
-    current_operation: Operation | None = None
-    operation_blocks = 0
+    openapi = _load_openapi(document)
+    raw_paths = openapi.get("paths")
+    if not isinstance(raw_paths, dict) or not raw_paths:
+        raise ContractValidationError("The pinned OpenAPI document contains no paths.")
+
     operations: dict[Operation, str] = {}
+    for raw_path, raw_path_item in raw_paths.items():
+        if not isinstance(raw_path, str) or not raw_path.startswith("/"):
+            raise ContractValidationError("Every OpenAPI path must be an absolute API path.")
+        if not isinstance(raw_path_item, dict):
+            raise ContractValidationError(f"OpenAPI path {raw_path!r} must be a mapping.")
 
-    for line in document.splitlines():
-        if line == "paths:":
-            in_paths = True
-            current_path = None
-            current_operation = None
-            continue
-
-        if not in_paths:
-            continue
-
-        if line and not line.startswith(" "):
-            break
-
-        path_match = _PATH_PATTERN.match(line)
-        if path_match:
-            current_path = path_match.group("path")
-            current_operation = None
-            continue
-
-        method_match = _METHOD_PATTERN.match(line)
-        if method_match and current_path is not None:
-            current_operation = Operation(method_match.group("method").upper(), current_path)
-            operation_blocks += 1
-            continue
-
-        operation_id_match = _OPERATION_ID_PATTERN.match(line)
-        if operation_id_match and current_operation is not None:
-            if current_operation in operations:
+        path_item = cast(Mapping[str, object], raw_path_item)
+        for method in HTTP_METHODS:
+            raw_operation = path_item.get(method)
+            if raw_operation is None:
+                continue
+            if not isinstance(raw_operation, dict):
                 raise ContractValidationError(
-                    f"Duplicate contract operation: {current_operation.method} "
-                    f"{current_operation.path}."
+                    f"OpenAPI operation {method.upper()} {raw_path} must be a mapping."
                 )
-            operation_id = operation_id_match.group("operation_id").strip("'\"")
-            operations[current_operation] = operation_id
-            current_operation = None
 
-    if not in_paths or not operations:
-        raise ContractValidationError("The pinned OpenAPI document contains no parsed operations.")
-    if operation_blocks != len(operations):
-        raise ContractValidationError(
-            "Every OpenAPI operation must declare an operationId for drift validation."
-        )
+            operation = cast(Mapping[str, object], raw_operation)
+            operation_id = operation.get("operationId")
+            if not isinstance(operation_id, str) or not operation_id:
+                raise ContractValidationError(
+                    f"OpenAPI operation {method.upper()} {raw_path} must declare operationId."
+                )
 
+            key = Operation(method.upper(), raw_path)
+            if key in operations:
+                raise ContractValidationError(
+                    f"Duplicate contract operation: {key.method} {key.path}."
+                )
+            operations[key] = operation_id
+
+    if not operations:
+        raise ContractValidationError("The pinned OpenAPI document contains no operations.")
     return operations
+
+
+def contract_declares_api_v1(document: str) -> bool:
+    openapi = _load_openapi(document)
+    raw_servers = openapi.get("servers")
+    if not isinstance(raw_servers, list):
+        return False
+
+    for raw_server in raw_servers:
+        if not isinstance(raw_server, dict):
+            continue
+        server = cast(Mapping[str, object], raw_server)
+        if server.get("url") == "/api/v1":
+            return True
+    return False
 
 
 def _normalize_api_route(route: str) -> str | None:
@@ -238,7 +252,7 @@ def validate_implemented_operations(
 def check_current_implementation() -> tuple[int, int, str]:
     lock = load_contract_lock()
     document = fetch_pinned_openapi(lock)
-    if not re.search(r"(?m)^  - url: /api/v1\s*$", document):
+    if not contract_declares_api_v1(document):
         raise ContractValidationError("The pinned contract no longer declares /api/v1.")
 
     contract_operations = parse_openapi_operations(document)
