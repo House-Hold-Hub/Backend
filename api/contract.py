@@ -22,9 +22,9 @@ DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 _DRF_NAMED_GROUP_NAME_PATTERN = re.compile(r"\(\?P<[A-Za-z_]\w*>")
-_URL_LITERAL_ESCAPE_PATTERN = re.compile(r"\\([.\-_~:@!_DRF_NAMED_GROUP_NAME_PATTERN = re.compile(r"\(\?P<[A-Za-z_]\w*>")
-_PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
-'()*+,;=/])")
+_URL_LITERAL_ESCAPE_PATTERN = re.compile(
+    r"\\([.\-_~:@!$&'()*+,;=/])"
+)
 _PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
 _DRF_FORMAT_SUFFIX = r"\.{format}/?"
 _DRF_PATH_FORMAT_SUFFIX = "<drf_format_suffix:format>"
