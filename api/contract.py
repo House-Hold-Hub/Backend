@@ -21,6 +21,7 @@ DEFAULT_LOCK_PATH = ROOT / "api" / "openapi-contract.lock.toml"
 
 _DJANGO_CONVERTER_PATTERN = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 _DRF_NAMED_GROUP_PATTERN = re.compile(r"\(\?P<(?P<name>[A-Za-z_]\w*)>[^)]+\)")
+_PATH_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]+\}")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -248,12 +249,24 @@ def collect_implemented_operations(
     return operations
 
 
+def _canonical_operation(operation: Operation) -> Operation:
+    return Operation(
+        operation.method,
+        _PATH_PLACEHOLDER_PATTERN.sub("{}", operation.path),
+    )
+
+
 def validate_implemented_operations(
     contract_operations: Mapping[Operation, str],
     implemented_operations: Iterable[Operation],
 ) -> int:
     implemented = set(implemented_operations)
-    unexpected = sorted(implemented - set(contract_operations))
+    canonical_contract = {_canonical_operation(operation) for operation in contract_operations}
+    unexpected = sorted(
+        operation
+        for operation in implemented
+        if _canonical_operation(operation) not in canonical_contract
+    )
     if unexpected:
         details = ", ".join(f"{operation.method} {operation.path}" for operation in unexpected)
         raise ContractValidationError(
