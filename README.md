@@ -71,4 +71,18 @@ mypy .
 
 Dependency locks are generated with `pip-tools` from `requirements.in` and `requirements-dev.in`.
 
-This scaffold intentionally does not add DRF routing/permissions, full-stack Docker Compose, or GitHub Actions; those belong to subsequent repository-owned issues.
+## DRF foundation and API contract check
+
+All application API routes are mounted below `/api/v1`. DRF uses page-number pagination with `page` as the page selector, `limit` as the page-size selector, a default size of 20, and a maximum size of 100, matching the canonical OpenAPI parameter contract.
+
+`api.permissions.HouseholdScopedPermission` is a fail-closed base permission. A view must resolve an active household membership through `get_active_household_membership(request)` before access is granted. Object authorization is evaluated only after that membership exists; the base object hook denies by default.
+
+The Documentation repository remains the only authoritative OpenAPI source. This repository deliberately does not check in or generate a competing schema. With the Documentation repository available as a sibling checkout, run:
+
+```bash
+python manage.py check_api_contract ../Documentation/api/openapi.yaml
+```
+
+The checker validates the configured `/api/v1` mount and requires every implemented Backend method/path pair to exist in the canonical contract. Contract-only operations are allowed while the MVP is delivered incrementally; placeholder endpoints are not created merely to satisfy the full future route inventory. Django `path()`/`include()` routing, standard converters (`str`, `int`, `slug`, `uuid`), DRF `APIView`/`@api_view`, and DRF ViewSet action mappings are supported. Unsupported routing constructs, including regex routes, fail closed with a clear error rather than being guessed at.
+
+Repository-local GitHub Actions wiring is intentionally not added here; that belongs to Backend issue #5. Full-stack Docker Compose remains owned by Infrastructure.
