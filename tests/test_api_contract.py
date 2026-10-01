@@ -131,6 +131,17 @@ def test_explicit_extended_api_view_handlers_are_collected() -> None:
     )
 
 
+def test_api_view_route_http_method_names_override_is_respected() -> None:
+    callback = _CrudWidgetView.as_view(http_method_names=["get"])
+    patterns: list[URLPattern | URLResolver] = [
+        path("widgets/<uuid:widget_id>", callback),
+    ]
+
+    operations = collect_operations_from_patterns(patterns)
+
+    assert operations == frozenset({Operation("GET", "/widgets/{widget_id}")})
+
+
 def test_crud_api_view_handlers_are_unchanged() -> None:
     patterns: list[URLPattern | URLResolver] = [
         path("widgets/<uuid:widget_id>", _CrudWidgetView.as_view()),
@@ -147,6 +158,18 @@ def test_crud_api_view_handlers_are_unchanged() -> None:
             Operation("DELETE", "/widgets/{widget_id}"),
         }
     )
+
+
+def test_viewset_route_http_method_names_override_is_respected() -> None:
+    callback = _WidgetViewSet.as_view(
+        {"get": "list", "post": "create"},
+        http_method_names=["get"],
+    )
+    patterns: list[URLPattern | URLResolver] = [path("widgets/", callback)]
+
+    operations = collect_operations_from_patterns(patterns)
+
+    assert operations == frozenset({Operation("GET", "/widgets/")})
 
 
 def test_viewset_actions_respect_http_method_names() -> None:

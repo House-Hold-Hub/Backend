@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -167,6 +167,30 @@ def _django_api_base_path(resolver: URLResolver) -> str:
     return "/" + route[:-1]
 
 
+def _http_method_names_for_callback(
+    callback: object,
+    view_class: type[APIView],
+) -> frozenset[str]:
+    initkwargs = getattr(callback, "initkwargs", None)
+    if initkwargs is not None and not isinstance(initkwargs, Mapping):
+        raise ContractCheckError("DRF callback initkwargs must be a mapping")
+
+    configured = (
+        initkwargs["http_method_names"]
+        if initkwargs is not None and "http_method_names" in initkwargs
+        else view_class.http_method_names
+    )
+    if isinstance(configured, (str, bytes)) or not isinstance(configured, Collection):
+        raise ContractCheckError("DRF callback http_method_names must be a collection of strings")
+
+    methods: set[str] = set()
+    for method in configured:
+        if not isinstance(method, str):
+            raise ContractCheckError("DRF callback http_method_names must contain only strings")
+        methods.add(method)
+    return frozenset(methods)
+
+
 def _methods_for_callback(callback: object) -> frozenset[str]:
     actions = getattr(callback, "actions", None)
     if actions is not None:
@@ -178,6 +202,7 @@ def _methods_for_callback(callback: object) -> frozenset[str]:
             view_class = getattr(callback, "view_class", None)
         if not isinstance(view_class, type) or not issubclass(view_class, APIView):
             raise ContractCheckError("DRF ViewSet callback has no supported view class")
+        http_method_names = _http_method_names_for_callback(callback, view_class)
 
         methods: set[str] = set()
         for raw_method in actions:
@@ -188,7 +213,7 @@ def _methods_for_callback(callback: object) -> frozenset[str]:
                 raise ContractCheckError(
                     f"unsupported HTTP method in DRF ViewSet: {raw_method!r}"
                 )
-            if method in view_class.http_method_names:
+            if method in http_method_names:
                 methods.add(method.upper())
 
         if not methods:
@@ -204,11 +229,12 @@ def _methods_for_callback(callback: object) -> frozenset[str]:
             "API route callback is not a supported DRF APIView/@api_view/ViewSet callback"
         )
 
+    http_method_names = _http_method_names_for_callback(callback, view_class)
     implementation_mro = view_class.__mro__[: view_class.__mro__.index(APIView)]
     methods = {
         method.upper()
         for method in _OPENAPI_OPERATION_METHODS
-        if method in view_class.http_method_names
+        if method in http_method_names
         and any(method in owner.__dict__ for owner in implementation_mro)
         and callable(getattr(view_class, method, None))
     }
