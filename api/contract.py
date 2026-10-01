@@ -173,6 +173,12 @@ def _methods_for_callback(callback: object) -> frozenset[str]:
         if not isinstance(actions, Mapping):
             raise ContractCheckError("DRF ViewSet callback actions must be a mapping")
 
+        view_class = getattr(callback, "cls", None)
+        if view_class is None:
+            view_class = getattr(callback, "view_class", None)
+        if not isinstance(view_class, type) or not issubclass(view_class, APIView):
+            raise ContractCheckError("DRF ViewSet callback has no supported view class")
+
         methods: set[str] = set()
         for raw_method in actions:
             if not isinstance(raw_method, str):
@@ -182,7 +188,8 @@ def _methods_for_callback(callback: object) -> frozenset[str]:
                 raise ContractCheckError(
                     f"unsupported HTTP method in DRF ViewSet: {raw_method!r}"
                 )
-            methods.add(method.upper())
+            if method in view_class.http_method_names:
+                methods.add(method.upper())
 
         if not methods:
             raise ContractCheckError("DRF ViewSet callback has no explicit HTTP method mappings")

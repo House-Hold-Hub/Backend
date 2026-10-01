@@ -9,6 +9,7 @@ from django.urls.resolvers import URLPattern, URLResolver
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.viewsets import ViewSet
 
 from api.contract import (
     ContractCheckError,
@@ -48,6 +49,18 @@ class _CrudWidgetView(_WidgetView):
 
     def delete(self, request: Request, widget_id: object) -> Response:
         return Response({"id": str(widget_id)})
+
+
+class _WidgetViewSet(ViewSet):
+    def list(self, request: Request) -> Response:
+        return Response([])
+
+    def create(self, request: Request) -> Response:
+        return Response({})
+
+
+class _GetOnlyWidgetViewSet(_WidgetViewSet):
+    http_method_names = ["get"]
 
 
 def _write_contract(
@@ -132,6 +145,29 @@ def test_crud_api_view_handlers_are_unchanged() -> None:
             Operation("PUT", "/widgets/{widget_id}"),
             Operation("PATCH", "/widgets/{widget_id}"),
             Operation("DELETE", "/widgets/{widget_id}"),
+        }
+    )
+
+
+def test_viewset_actions_respect_http_method_names() -> None:
+    callback = _GetOnlyWidgetViewSet.as_view({"get": "list", "post": "create"})
+    patterns: list[URLPattern | URLResolver] = [path("widgets/", callback)]
+
+    operations = collect_operations_from_patterns(patterns)
+
+    assert operations == frozenset({Operation("GET", "/widgets/")})
+
+
+def test_unrestricted_viewset_actions_are_still_collected() -> None:
+    callback = _WidgetViewSet.as_view({"get": "list", "post": "create"})
+    patterns: list[URLPattern | URLResolver] = [path("widgets/", callback)]
+
+    operations = collect_operations_from_patterns(patterns)
+
+    assert operations == frozenset(
+        {
+            Operation("GET", "/widgets/"),
+            Operation("POST", "/widgets/"),
         }
     )
 
