@@ -14,7 +14,6 @@ _SUPPORTED_CONVERTERS = frozenset({"str", "int", "slug", "uuid"})
 _OPENAPI_OPERATION_METHODS = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 )
-_API_VIEW_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 _OPENAPI_PATH_ITEM_METADATA = frozenset(
     {"$ref", "summary", "description", "servers", "parameters"}
 )
@@ -198,10 +197,13 @@ def _methods_for_callback(callback: object) -> frozenset[str]:
             "API route callback is not a supported DRF APIView/@api_view/ViewSet callback"
         )
 
+    implementation_mro = view_class.__mro__[: view_class.__mro__.index(APIView)]
     methods = {
         method.upper()
-        for method in _API_VIEW_METHODS
-        if callable(getattr(view_class, method, None))
+        for method in _OPENAPI_OPERATION_METHODS
+        if method in view_class.http_method_names
+        and any(method in owner.__dict__ for owner in implementation_mro)
+        and callable(getattr(view_class, method, None))
     }
     if not methods:
         raise ContractCheckError("DRF APIView route has no supported explicit HTTP handlers")

@@ -25,6 +25,31 @@ class _WidgetView(APIView):
         return Response({"id": str(widget_id)})
 
 
+class _ExtendedWidgetView(_WidgetView):
+    def head(self, request: Request, widget_id: object) -> Response:
+        return Response({"id": str(widget_id)})
+
+    def options(self, request: Request, widget_id: object) -> Response:
+        return Response({"id": str(widget_id)})
+
+    def trace(self, request: Request, widget_id: object) -> Response:
+        return Response({"id": str(widget_id)})
+
+
+class _CrudWidgetView(_WidgetView):
+    def post(self, request: Request, widget_id: object) -> Response:
+        return Response({"id": str(widget_id)})
+
+    def put(self, request: Request, widget_id: object) -> Response:
+        return Response({"id": str(widget_id)})
+
+    def patch(self, request: Request, widget_id: object) -> Response:
+        return Response({"id": str(widget_id)})
+
+    def delete(self, request: Request, widget_id: object) -> Response:
+        return Response({"id": str(widget_id)})
+
+
 def _write_contract(
     path: Path,
     *,
@@ -76,6 +101,41 @@ def test_path_include_and_uuid_placeholder_are_normalized() -> None:
     assert operations == frozenset({Operation("GET", "/widgets/{widget_id}")})
 
 
+def test_explicit_extended_api_view_handlers_are_collected() -> None:
+    patterns: list[URLPattern | URLResolver] = [
+        path("widgets/<uuid:widget_id>", _ExtendedWidgetView.as_view()),
+    ]
+
+    operations = collect_operations_from_patterns(patterns)
+
+    assert operations == frozenset(
+        {
+            Operation("GET", "/widgets/{widget_id}"),
+            Operation("HEAD", "/widgets/{widget_id}"),
+            Operation("OPTIONS", "/widgets/{widget_id}"),
+            Operation("TRACE", "/widgets/{widget_id}"),
+        }
+    )
+
+
+def test_crud_api_view_handlers_are_unchanged() -> None:
+    patterns: list[URLPattern | URLResolver] = [
+        path("widgets/<uuid:widget_id>", _CrudWidgetView.as_view()),
+    ]
+
+    operations = collect_operations_from_patterns(patterns)
+
+    assert operations == frozenset(
+        {
+            Operation("GET", "/widgets/{widget_id}"),
+            Operation("POST", "/widgets/{widget_id}"),
+            Operation("PUT", "/widgets/{widget_id}"),
+            Operation("PATCH", "/widgets/{widget_id}"),
+            Operation("DELETE", "/widgets/{widget_id}"),
+        }
+    )
+
+
 def test_regex_route_fails_closed() -> None:
     patterns: list[URLPattern | URLResolver] = [
         re_path(r"^widgets/(?P<widget_id>[^/]+)$", _WidgetView.as_view()),
@@ -94,11 +154,14 @@ def test_unsupported_path_converter_fails_closed() -> None:
         collect_operations_from_patterns(patterns)
 
 
-def test_implemented_operation_not_in_contract_is_drift() -> None:
-    implemented = frozenset({Operation("POST", "/widgets/{widget_id}")})
+def test_explicit_supported_handler_missing_from_contract_is_drift() -> None:
+    patterns: list[URLPattern | URLResolver] = [
+        path("widgets/<uuid:widget_id>", _ExtendedWidgetView.as_view()),
+    ]
+    implemented = collect_operations_from_patterns(patterns)
     contract = frozenset({Operation("GET", "/widgets/{widget_id}")})
 
-    with pytest.raises(ContractCheckError, match="POST /widgets/"):
+    with pytest.raises(ContractCheckError, match="TRACE /widgets/"):
         assert_implemented_operations_declared(implemented, contract)
 
 
