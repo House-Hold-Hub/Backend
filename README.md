@@ -19,3 +19,52 @@ so no CORS configuration is included; a cross-origin deployment needs an explici
 
 The `accounts.User` model is a UUID-keyed skeleton; its completion and the initial migration
 are tracked in Backend#2.
+
+## API (`/api/v1`)
+
+The wire contract is owned by Documentation (`api/openapi.yaml`, ADR-014). Backend implements it and
+publishes no schema of its own: there is no schema endpoint and no generated OpenAPI artifact.
+
+Foundation in `apps/api`:
+
+- DRF with JSON-only rendering/parsing, Django cookie-session authentication, `IsAuthenticated` as the
+  default permission, `page`/`limit` pagination (`{"data": [...], "meta": {"page", "limit", "total"}}`,
+  invalid values are 400) and `ErrorResponse` bodies for every error.
+- Every API view extends `apps.api.views.ApiView` (or mixes in `ContractViewMixin`). CSRF is enforced on
+  all unsafe methods, public ones included; an unauthenticated call to a protected operation is still 401.
+- Household-scoped permissions (`apps.api.permissions.HouseholdScopedPermission`): 401 when unauthenticated,
+  404 when the caller has no active membership (identical for nonexistent households) before any action
+  or object rule is evaluated, 403 for an action denied inside the household. Everything defaults to
+  deny, and `resolve_membership` must be provided by the Membership app (Backend#12).
+- Routes are added to `apps/api/urls.py` as operations are implemented. No operation is stubbed.
+
+### Contract check
+
+`contract/documentation-revision.json` pins the Documentation commit and the SHA-256 of
+`api/openapi.yaml`. Backend keeps no copy of the contract.
+
+```bash
+git -C ../Documentation checkout <pinned commit>   # or any checkout whose api/openapi.yaml matches the pin
+uv run python manage.py check_api_contract --spec ../Documentation/api/openapi.yaml
+```
+
+The command refuses a contract file that differs from the pin, then discovers the implemented operations
+from the live URLconf and fails when any of them diverges (missing from the contract, wrong path-parameter
+type, public/protected mismatch, missing contract base view, missing pagination, unversioned or unverifiable
+routes). Operations not implemented yet are only counted. There is no allowlist or baseline, so future
+divergences cannot be masked. The foundation (server prefix, session cookie, CSRF header, pagination
+parameters, `ErrorResponse` codes) is always checked. CI runs it in `.github/workflows/api-contract.yml`,
+checking out the pinned Documentation commit; the general lint/test workflow is Backend#5.
+
+To adopt a newer contract, in the same PR as the code that needs it:
+
+```bash
+git -C ../Documentation rev-parse HEAD
+git -C ../Documentation show <sha>:api/openapi.yaml | shasum -a 256
+```
+
+then update `commit` and `sha256` in `contract/documentation-revision.json`.
+
+Not verifiable statically (covered by per-operation API tests as operations land): response status codes,
+request/response bodies and field nullability. The check is exercised with
+`HOUSEHOLDHUB_OPENAPI_SPEC=<path> uv run pytest` against the real contract in addition to the CI step.

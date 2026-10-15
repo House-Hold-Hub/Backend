@@ -1,0 +1,55 @@
+name: API contract
+
+# Narrow gate for Backend#3: implemented /api/v1 operations must match the Documentation-owned
+# OpenAPI contract at the revision pinned in contract/documentation-revision.json. Lint, type-check
+# and the full test suite belong to the general workflow tracked in Backend#5, not to this one.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Contract drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Backend
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read pinned Documentation revision
+        id: pin
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          pin = json.load(open("contract/documentation-revision.json"))
+          print(f"repository={pin['repository']}")
+          print(f"commit={pin['commit']}")
+          PY
+
+      - name: Checkout pinned contract
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.pin.outputs.repository }}
+          ref: ${{ steps.pin.outputs.commit }}
+          path: documentation
+          sparse-checkout: api/openapi.yaml
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Check implemented operations against the contract
+        run: uv run python manage.py check_api_contract --spec documentation/api/openapi.yaml
+        env:
+          DJANGO_SECRET_KEY: ci-contract-check-only
