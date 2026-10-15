@@ -41,12 +41,6 @@ def test_api_is_mounted_under_the_versioned_prefix():
     assert any(str(p.pattern) == "api/v1/" for p in get_resolver().url_patterns)
 
 
-def test_no_endpoint_is_published_before_its_feature_issue():
-    from apps.api.urls import urlpatterns
-
-    assert urlpatterns == []
-
-
 def test_error_codes_never_include_unused_http_statuses():
     assert "422" not in {str(code) for code in ErrorCode}
 

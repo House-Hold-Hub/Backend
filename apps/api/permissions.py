@@ -7,8 +7,11 @@ Evaluation order, fail-closed at every step:
    identical for a nonexistent household and one the caller does not belong to. Action and
    object permissions are never evaluated for a non-member.
 3. The action permission of the permissions matrix is applied; a denial is 403.
-4. For object endpoints the membership is verified again, the object must belong to the
-   URL household (otherwise 404), and only then is the object permission applied (403).
+4. For object endpoints the membership is obtained again through the same path: it is
+   resolved once per request and cached on the request for that household, and resolved
+   afresh if the cache has no entry (e.g. ``has_permission`` was bypassed). The object must
+   then belong to the URL household (otherwise 404), and only then is the object permission
+   applied (403). The cache never outlives the request, so removal takes effect on the next one.
 
 Everything defaults to deny: a subclass has to grant explicitly, and
 ``resolve_membership`` has no default so an unwired class can never grant access.

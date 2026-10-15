@@ -312,9 +312,10 @@ def test_contract_without_operations_is_refused_not_passed(tmp_path):
 # ---- management command ------------------------------------------------------------------------
 
 
-def test_command_passes_for_the_project_urlconf(tmp_path, capsys):
+def test_command_passes_when_nothing_diverges(tmp_path, capsys):
     spec_file, pin_file = write_contract(tmp_path)
-    call_command("check_api_contract", spec=str(spec_file), pin=str(pin_file))
+    with override_settings(ROOT_URLCONF="apps.api.tests.empty_urls"):
+        call_command("check_api_contract", spec=str(spec_file), pin=str(pin_file))
     assert "0/1 operations implemented" in capsys.readouterr().out
 
 
