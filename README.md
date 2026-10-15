@@ -17,6 +17,61 @@ uv run pytest
 Configuration is environment-only (see `.env.example`). The default topology is same-origin,
 so no CORS configuration is included; a cross-origin deployment needs an explicit CORS/credential review.
 
+## Docker
+
+### Build
+
+```bash
+docker build -t householdhub-backend .
+```
+
+### Run
+
+The container requires a reachable PostgreSQL instance and at minimum `DJANGO_SECRET_KEY`.
+All database settings default to the values in `settings.py` but should be overridden at runtime.
+
+```bash
+docker run --rm \
+  -e DJANGO_SECRET_KEY=<secret> \
+  -e DJANGO_ALLOWED_HOSTS=localhost \
+  -e POSTGRES_HOST=<host> \
+  -e POSTGRES_PORT=5432 \
+  -e POSTGRES_DB=householdhub \
+  -e POSTGRES_USER=householdhub \
+  -e POSTGRES_PASSWORD=<password> \
+  -p 8000:8000 \
+  householdhub-backend
+```
+
+Run pending migrations before the first start (or after schema changes):
+
+```bash
+docker run --rm \
+  -e DJANGO_SECRET_KEY=<secret> \
+  -e POSTGRES_HOST=<host> \
+  -e POSTGRES_PORT=5432 \
+  -e POSTGRES_DB=householdhub \
+  -e POSTGRES_USER=householdhub \
+  -e POSTGRES_PASSWORD=<password> \
+  householdhub-backend \
+  python manage.py migrate
+```
+
+### Required environment variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DJANGO_SECRET_KEY` | — | **Required.** No default. |
+| `DJANGO_DEBUG` | `false` | Set `true` only for local development. |
+| `DJANGO_ALLOWED_HOSTS` | (empty) | Comma-separated hostnames. Required when `DEBUG=false`. |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | (empty) | Required behind a TLS proxy. |
+| `DJANGO_SECURE_COOKIES` | `true` when `DEBUG=false` | Set `false` for plain-HTTP local runs. |
+| `POSTGRES_HOST` | `localhost` | External PostgreSQL host. |
+| `POSTGRES_PORT` | `5432` | |
+| `POSTGRES_DB` | `householdhub` | |
+| `POSTGRES_USER` | `householdhub` | |
+| `POSTGRES_PASSWORD` | (empty) | |
+
 The `accounts.User` model is a UUID-keyed skeleton; its completion and the initial migration
 are tracked in Backend#2.
 
