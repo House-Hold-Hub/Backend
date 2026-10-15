@@ -12,8 +12,8 @@ from apps.api.errors import ErrorCode, exception_handler
 def test_drf_is_installed_and_json_only():
     assert "rest_framework" in settings.INSTALLED_APPS
     assert "apps.api" in settings.INSTALLED_APPS
-    assert [r.__name__ for r in api_settings.DEFAULT_RENDERER_CLASSES] == ["JSONRenderer"]
-    assert [p.__name__ for p in api_settings.DEFAULT_PARSER_CLASSES] == ["JSONParser"]
+    assert [r.__name__ for r in api_settings.DEFAULT_RENDERER_CLASSES] == ["JSONRenderer"]  # type: ignore[attr-defined]
+    assert [p.__name__ for p in api_settings.DEFAULT_PARSER_CLASSES] == ["JSONParser"]  # type: ignore[attr-defined]
 
 
 def test_session_cookie_authentication_is_the_only_authentication():
@@ -21,7 +21,7 @@ def test_session_cookie_authentication_is_the_only_authentication():
 
 
 def test_views_require_authentication_unless_they_opt_out():
-    assert [p.__name__ for p in api_settings.DEFAULT_PERMISSION_CLASSES] == ["IsAuthenticated"]
+    assert [p.__name__ for p in api_settings.DEFAULT_PERMISSION_CLASSES] == ["IsAuthenticated"]  # type: ignore[attr-defined]
 
 
 def test_pagination_and_error_handler_are_wired():

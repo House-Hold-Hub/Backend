@@ -1,0 +1,116 @@
+name: CI
+
+# General Backend quality gate (Backend#5): lint, type-check and the pytest suite on PostgreSQL.
+# Tools and versions come from pyproject.toml / uv.lock. The OpenAPI contract check stays in
+# api-contract.yml. Coverage is reported for information only; there is no percentage threshold.
+# Automation's reusable docker-build workflow does not apply here (no image is built).
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Backend
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff
+        run: uv run ruff check .
+
+  type-check:
+    name: Type check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Backend
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Mypy
+        run: uv run mypy .
+        env:
+          DJANGO_SECRET_KEY: ci-type-check-only
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: householdhub
+          POSTGRES_USER: householdhub
+          POSTGRES_PASSWORD: ci-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U householdhub -d householdhub"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DJANGO_SECRET_KEY: ci-test-only
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: householdhub
+      POSTGRES_USER: householdhub
+      POSTGRES_PASSWORD: ci-test-only
+
+    steps:
+      - name: Checkout Backend
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run tests with coverage
+        run: uv run pytest --cov --cov-report=xml --cov-report=term
+
+      - name: Publish coverage report
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "## Coverage (informational, not a gate)"
+            echo
+            uv run coverage report --format=markdown
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage XML
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore

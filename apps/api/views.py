@@ -14,7 +14,7 @@ class ContractViewMixin:
     """
 
     def initial(self, request, *args, **kwargs):
-        super().initial(request, *args, **kwargs)
+        super().initial(request, *args, **kwargs)  # type: ignore[misc]
         ApiSessionAuthentication().enforce_csrf(request._request)
 
 

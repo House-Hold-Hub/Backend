@@ -34,7 +34,7 @@ def error_body(code, message, fields=None):
 
 def flatten_validation_detail(detail, prefix=""):
     """Flatten DRF validation detail into ``{field: [message, ...]}`` (dotted paths for nesting)."""
-    fields = {}
+    fields: dict[str, list[str]] = {}
 
     def add(key, messages):
         fields.setdefault(key or "non_field_errors", []).extend(messages)
@@ -72,7 +72,8 @@ def exception_handler(exc, context):
     if not isinstance(exc, exceptions.APIException):
         return None
 
-    headers = {}
+    headers: dict[str, str] = {}
+    http_status: int
     if isinstance(exc, (exceptions.NotAuthenticated, exceptions.AuthenticationFailed)):
         http_status = status.HTTP_401_UNAUTHORIZED
         body = error_body(ErrorCode.AUTHENTICATION_ERROR, "Authentication is required.")
@@ -85,8 +86,8 @@ def exception_handler(exc, context):
     elif isinstance(exc, exceptions.Throttled):
         http_status = status.HTTP_429_TOO_MANY_REQUESTS
         body = error_body(ErrorCode.RATE_LIMITED, "Too many requests.")
-        if exc.wait is not None:
-            headers["Retry-After"] = str(int(exc.wait))
+        if exc.wait is not None:  # type: ignore[attr-defined]
+            headers["Retry-After"] = str(int(exc.wait))  # type: ignore[attr-defined]
     elif isinstance(exc, exceptions.ValidationError):
         http_status = status.HTTP_400_BAD_REQUEST
         body = error_body(ErrorCode.VALIDATION_ERROR, "Validation failed.", flatten_validation_detail(exc.detail))

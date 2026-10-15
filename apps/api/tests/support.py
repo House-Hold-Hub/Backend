@@ -16,14 +16,14 @@ from apps.api.views import ApiView
 
 # --- in-memory membership fixtures (no Household/Membership models exist yet: Backend#11/#12) ---
 
-MEMBERSHIPS = {}  # (user_pk, household_id as str) -> role
-OBJECTS = {}  # object id (str) -> Obj
-CALLS = []  # ordered record of permission hooks that ran
+MEMBERSHIPS: dict[tuple[object, str], str] = {}  # (user_pk, household_id as str) -> role
+OBJECTS: dict[str, Obj] = {}  # object id (str) -> Obj
+CALLS: list[object] = []  # ordered record of permission hooks that ran
 
 
 @dataclass
 class Obj:
-    household_id: uuid.UUID
+    household_id: uuid.UUID | None
     creator_id: object
 
 
