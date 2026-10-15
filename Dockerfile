@@ -35,8 +35,5 @@ USER appuser
 
 EXPOSE 8000
 
-# 2 sync workers; adjust WEB_CONCURRENCY at runtime for the target host.
-CMD ["gunicorn", "config.wsgi:application", \
-     "--bind", "0.0.0.0:8000", \
-     "--workers", "2", \
-     "--timeout", "30"]
+# Default to 2 workers; override at runtime with WEB_CONCURRENCY.
+CMD ["sh", "-c", "exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers ${WEB_CONCURRENCY:-2} --timeout 30"]

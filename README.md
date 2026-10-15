@@ -49,6 +49,9 @@ Run pending migrations before the first start (or after schema changes):
 docker run --rm \
   -e DJANGO_SECRET_KEY=<secret> \
   -e POSTGRES_HOST=<host> \
+  -e POSTGRES_PORT=5432 \
+  -e POSTGRES_DB=householdhub \
+  -e POSTGRES_USER=householdhub \
   -e POSTGRES_PASSWORD=<password> \
   householdhub-backend \
   python manage.py migrate
