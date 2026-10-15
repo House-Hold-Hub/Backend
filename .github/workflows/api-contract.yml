@@ -41,6 +41,7 @@ jobs:
           ref: ${{ steps.pin.outputs.commit }}
           path: documentation
           sparse-checkout: api/openapi.yaml
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Setup uv

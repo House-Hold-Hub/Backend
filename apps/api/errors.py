@@ -96,7 +96,10 @@ def exception_handler(exc, context):
     else:
         # Statuses the contract does not enumerate (405, 406, 415, ...) keep their HTTP status.
         http_status = exc.status_code
-        code = ErrorCode.INTERNAL_ERROR if http_status >= 500 else ErrorCode.VALIDATION_ERROR
+        if http_status == status.HTTP_409_CONFLICT:
+            code = ErrorCode.CONFLICT
+        else:
+            code = ErrorCode.INTERNAL_ERROR if http_status >= 500 else ErrorCode.VALIDATION_ERROR
         body = error_body(code, str(exc.detail))
 
     set_rollback()

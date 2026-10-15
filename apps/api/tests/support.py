@@ -68,6 +68,10 @@ class ProtectedPost(ApiView):
         return Response({"ok": True})
 
 
+class Conflict(exceptions.APIException):
+    status_code = 409
+
+
 class Boom(ApiView):
     permission_classes = [AllowAny]
 
@@ -83,6 +87,8 @@ class Boom(ApiView):
             raise exceptions.ParseError()
         if kind == "http404":
             raise Http404
+        if kind == "conflict":
+            raise Conflict("Duplicate membership.")
         if kind == "method":
             raise exceptions.MethodNotAllowed("get")
         raise RuntimeError("unexpected")

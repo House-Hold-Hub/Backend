@@ -59,6 +59,11 @@ def test_throttled_is_429_with_retry_after(client):
     assert response["Retry-After"] == "7"
 
 
+def test_409_exceptions_use_the_conflict_code(client):
+    response = client.get("/api/v1/boom?kind=conflict")
+    assert (response.status_code, response.json()["code"]) == (409, "CONFLICT")
+
+
 def test_other_client_errors_keep_status_and_use_a_contract_code(client):
     response = client.get("/api/v1/boom?kind=method")
     assert response.status_code == 405
