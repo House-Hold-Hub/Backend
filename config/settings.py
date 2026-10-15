@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "allauth.account",
     "allauth.socialaccount",
     "apps.accounts",
+    "apps.api",
 ]
 
 MIDDLEWARE = [
@@ -121,3 +122,15 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ADR-002 / ADR-014: JSON-only DRF API under /api/v1 with Django cookie-session authentication.
+# Fail-closed defaults: every view requires authentication unless it explicitly opts out
+# (public operations declare `security: []` in the Documentation OpenAPI contract).
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": ["apps.api.authentication.ApiSessionAuthentication"],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
+    "DEFAULT_PAGINATION_CLASS": "apps.api.pagination.PageLimitPagination",
+    "EXCEPTION_HANDLER": "apps.api.errors.exception_handler",
+}
