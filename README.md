@@ -17,6 +17,32 @@ uv run pytest
 Configuration is environment-only (see `.env.example`). The default topology is same-origin,
 so no CORS configuration is included; a cross-origin deployment needs an explicit CORS/credential review.
 
+## CI
+
+`.github/workflows/ci.yml` runs on `pull_request` and `workflow_dispatch` with Python 3.14 and `uv sync --frozen`.
+Tool versions are pinned by `uv.lock`; configuration lives in `pyproject.toml`.
+
+| Job (status check name) | Command |
+|---|---|
+| `Lint` | `uv run ruff check .` |
+| `Type check` | `DJANGO_SECRET_KEY=x uv run mypy .` (mypy + django-stubs + djangorestframework-stubs) |
+| `Test` | `uv run pytest --cov` against a PostgreSQL 17 service container |
+
+Coverage (pytest-cov) is informational only: the table appears in the workflow run summary linked from the PR
+checks, and `coverage.xml` is uploaded as an artifact. There is no percentage threshold.
+
+Branch protection is owned by Automation#2 and is **not yet configured**. Once it is, the checks to require are
+`Lint`, `Type check`, `Test` and `Contract drift` (from `api-contract.yml`). Until then the issue's
+"status check required for merge" criterion is not met. Job names are stable; renaming one breaks the required check.
+
+Locally (with PostgreSQL reachable per `.env.example`):
+
+```bash
+uv run ruff check .
+DJANGO_SECRET_KEY=x uv run mypy .
+DJANGO_SECRET_KEY=x uv run pytest --cov
+```
+
 ## Docker
 
 ### Build
@@ -109,7 +135,7 @@ type, public/protected mismatch, missing contract base view, missing pagination,
 routes). Operations not implemented yet are only counted. There is no allowlist or baseline, so future
 divergences cannot be masked. The foundation (server prefix, session cookie, CSRF header, pagination
 parameters, `ErrorResponse` codes) is always checked. CI runs it in `.github/workflows/api-contract.yml`,
-checking out the pinned Documentation commit; the general lint/test workflow is Backend#5.
+checking out the pinned Documentation commit; lint, type-check and tests run in `.github/workflows/ci.yml` (see CI).
 
 To adopt a newer contract, in the same PR as the code that needs it:
 

@@ -1,9 +1,9 @@
+import uuid
+
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIRequestFactory
 
 from . import support
-
-import uuid
 
 
 def _token(client):

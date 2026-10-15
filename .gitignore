@@ -5,3 +5,7 @@ __pycache__/
 .env
 staticfiles/
 .pytest_cache/
+coverage.xml
+.coverage
+.mypy_cache/
+.ruff_cache/

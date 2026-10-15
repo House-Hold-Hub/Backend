@@ -5,4 +5,6 @@ Documentation-owned OpenAPI contract. ``manage.py check_api_contract`` fails if 
 here (or any API view mounted elsewhere) diverges from that contract.
 """
 
-urlpatterns = []
+from django.urls import URLPattern, URLResolver
+
+urlpatterns: list[URLPattern | URLResolver] = []

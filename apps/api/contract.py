@@ -19,6 +19,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
@@ -184,7 +185,7 @@ def _walk(patterns, prefix=""):
 
 def discover(urlconf, report):
     """Return the implemented routes below ``/api/v1`` and flag anything unverifiable."""
-    routes = []
+    routes: list[Any] = []
     resolver = get_resolver(urlconf) if isinstance(urlconf, str) else URLResolver(RegexPattern(r"^/"), urlconf)
     for route, pattern in _walk(resolver.url_patterns):
         callback = pattern.callback
