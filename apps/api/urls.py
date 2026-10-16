@@ -5,6 +5,14 @@ Documentation-owned OpenAPI contract. ``manage.py check_api_contract`` fails if 
 here (or any API view mounted elsewhere) diverges from that contract.
 """
 
-from django.urls import URLPattern, URLResolver
+from django.urls import URLPattern, URLResolver, path
 
-urlpatterns: list[URLPattern | URLResolver] = []
+from apps.accounts import views as accounts
+
+urlpatterns: list[URLPattern | URLResolver] = [
+    path("auth/csrf", accounts.CsrfTokenView.as_view(), name="auth-csrf"),
+    path("auth/signup", accounts.SignupView.as_view(), name="auth-signup"),
+    path("auth/login", accounts.LoginView.as_view(), name="auth-login"),
+    path("auth/logout", accounts.LogoutView.as_view(), name="auth-logout"),
+    path("auth/me", accounts.CurrentUserView.as_view(), name="auth-me"),
+]

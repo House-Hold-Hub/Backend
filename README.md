@@ -185,10 +185,37 @@ a revoked cookie is anonymous on its next request.
 `revoke_all_sessions`, `revoke_other_sessions` and `rotate_and_revoke_others` are the reusable entry points (for
 example for a future soft deletion). Rotation at an identity change keeps only the approved keys
 (`ROTATION_PRESERVED_KEYS`: Django's authentication keys and expiry override, allauth's authentication records and
-the invitation intent) and rotates the CSRF token; login rotation is Django's and keeps the pre-login session. The
-ADR-013 invitation intent is set only through `set_invitation_intent(session, invitation_id: UUID, generation: int)`,
+the invitation intent) and rotates the CSRF token. Signup and login go through `establish_session`, whose new
+session keeps only a valid invitation intent from the previous one (anonymous, same account or another account).
+The ADR-013 invitation intent is set only through `set_invitation_intent(session, invitation_id: UUID, generation: int)`,
 so a bearer token cannot be stored there. Django's authentication hash still invalidates sessions after any password
 change. Expired rows are removed by the scheduled `python manage.py clearsessions`.
+
+### Authentication (`apps/accounts/views.py`, Backend#8)
+
+`getCsrfToken`, `signup`, `login`, `logout` and `getCurrentUser` are routed under `/api/v1/auth/`. Every response is
+`Cache-Control: private, no-store`, and every unsafe call, public ones included, needs `X-CSRFToken`.
+
+- **Signup** validates the ADR-016 password policy (15 to 128 code points, common-password and email/name
+  similarity checks, no composition rules), then in one transaction creates the user, its unverified allauth
+  `EmailAddress`, an `EmailVerificationBearer` (only the SHA-256 digest of a 256-bit bearer, 24 h) and the
+  `EmailDelivery`. The email, whose link carries the bearer only in the URI fragment
+  (`FRONTEND_EMAIL_VERIFICATION_PATH`), is submitted after the commit; a failure leaves the account and a
+  recoverable delivery. The response reports the delivery's honest status. A registered address is 409.
+- **Login** uses Django's `ModelBackend` (hashes for unknown addresses too, refuses disabled accounts). An
+  unverified account gets a restricted session: the verification gate keeps everything but the pre-verification
+  lifecycle closed.
+- **Logout** flushes the session, invitation intent included. Verifying and resending email are Backend#35.
+
+### Rate limiting (`apps/ratelimit`, ADR-016)
+
+`limiter.consume(action, ...)` takes a slot of each rate in `AUTH_RATE_LIMITS` with a single
+`INSERT ... ON CONFLICT DO UPDATE ... WHERE hits < limit RETURNING` per rate, so concurrent requests can never exceed
+a limit; a refusal is `429 RATE_LIMITED` with `Retry-After`. Keys are HMAC-SHA256 under `SECRET_KEY` (no address or
+IP is stored), the client IP is the peer address unless `RATE_LIMIT_TRUSTED_PROXY_COUNT` names trusted proxies, and
+IPv6 clients are grouped per /64. A database failure fails the request (closed). django-allauth's limiter is off
+(`ACCOUNT_RATE_LIMITS = False`). Ended windows are deleted by the scheduled, idempotent
+`python manage.py clear_expired_rate_limits`.
 
 ## API (`/api/v1`)
 

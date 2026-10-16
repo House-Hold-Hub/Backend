@@ -161,3 +161,35 @@ class Session(AbstractBaseSession):
         from .sessions import SessionStore
 
         return SessionStore
+
+
+class EmailVerificationBearer(models.Model):
+    """A one-time bearer proving ownership of an account's initial email (ADR-016 "One-time bearer credentials").
+
+    The bearer itself is sent only in the email's frontend URI fragment; only its SHA-256 digest is stored.
+    At most one bearer per account is usable: issuing a new one marks the previous one ``superseded_at``
+    (rotation). ``email`` is the address the bearer was issued for, so a bearer never verifies an address
+    the account no longer has. Consumption (``verifyEmail``) and resend belong to Backend#35, which sets
+    ``consumed_at`` atomically with marking the allauth ``EmailAddress`` verified.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="+")
+    email = models.EmailField(max_length=254)
+    digest = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(superseded_at__isnull=True, consumed_at__isnull=True),
+                name="accounts_one_usable_email_verification_bearer",
+            ),
+        ]
+
+    def __str__(self):
+        return f"EmailVerificationBearer({self.id})"

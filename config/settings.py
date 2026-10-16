@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.api",
     "apps.email_delivery",
+    "apps.ratelimit",
 ]
 
 MIDDLEWARE = [
@@ -98,20 +99,46 @@ AUTHENTICATION_BACKENDS = [
 
 # django-allauth (ADR-010, ADR-011): the normalized email is the only login identity, the user
 # model has no username, and email ownership must be verified. Verified-email state lives in
-# allauth's EmailAddress (User.is_email_verified); rate limits and token lifetimes stay at
-# allauth defaults until the deferred decision D01 is made.
+# allauth's EmailAddress (User.is_email_verified). allauth's own rate limiter is off: ADR-016 replaces it
+# with apps.ratelimit (atomic PostgreSQL counters, HMAC keys, 429 instead of a form error).
 ACCOUNT_USER_MODEL_USERNAME_FIELD = None
 ACCOUNT_LOGIN_METHODS = {"email"}
 ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*"]
 ACCOUNT_UNIQUE_EMAIL = True
 ACCOUNT_EMAIL_VERIFICATION = "mandatory"
+ACCOUNT_RATE_LIMITS = False
+
+# ADR-016 password policy: 15 to 128 Unicode code points, common-password and similarity checks, no
+# composition rules (so no NumericPasswordValidator). Django's default hasher and work factor.
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
+        "OPTIONS": {"user_attributes": ("email", "name")},
+    },
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 15}},
+    {"NAME": "apps.accounts.validators.MaximumLengthValidator", "OPTIONS": {"max_length": 128}},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
-    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
+
+# ADR-016 authentication rate limits as {action: ((per, limit, window_seconds), ...)}, per "ip", "email"
+# or "user"; enforced by apps.ratelimit. Each action has one subject so a view consumes it when that
+# subject is known (the email only after the body validated). Login counts failures per address:
+# a slot is reserved before the password check and released by a successful login.
+AUTH_RATE_LIMITS = {
+    "signup_ip": (("ip", 10, 60 * 60),),
+    "signup_email": (("email", 3, 60 * 60),),
+    "login_ip": (("ip", 30, 60),),
+    "login_failed_email": (("email", 5, 5 * 60),),
+}
+# Proxies Infrastructure puts in front of the service (0: use the peer address, ignore X-Forwarded-For).
+RATE_LIMIT_TRUSTED_PROXY_COUNT = 0
+RATE_LIMIT_IPV6_PREFIX = 64
+
+# ADR-016 one-time bearer lifetime for the initial email verification sent at signup (Backend#35 verifies).
+AUTH_EMAIL_VERIFICATION_LIFETIME_SECONDS = 24 * 60 * 60
+# Frontend route that reads the verification bearer from the URI fragment (same origin as the API).
+FRONTEND_EMAIL_VERIFICATION_PATH = "/verify-email"
 
 # ADR-011: database-backed sessions, 14-day expiry, HttpOnly session cookie,
 # readable CSRF cookie (sent back as X-CSRFToken), SameSite=Lax for OAuth redirects.

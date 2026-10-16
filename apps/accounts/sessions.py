@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from allauth.account.authentication import AUTHENTICATION_METHODS_SESSION_KEY
 from asgiref.sync import sync_to_async
-from django.contrib.auth import BACKEND_SESSION_KEY, HASH_SESSION_KEY, SESSION_KEY, get_user_model, logout
+from django.contrib.auth import BACKEND_SESSION_KEY, HASH_SESSION_KEY, SESSION_KEY, get_user_model, login, logout
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.sessions.backends.db import SessionStore as DatabaseSessionStore
 from django.core.exceptions import ValidationError
@@ -238,6 +238,26 @@ def rotate_and_revoke_others(request, user) -> int:
             if rotate_session(request):
                 keep = request.session.session_key
         return revoke_other_sessions(user, keep_session_key=keep)
+
+
+def establish_session(request, user, *, backend: str) -> None:
+    """Authentication boundary of signup and login: log ``user`` in under a new session key.
+
+    The new session carries nothing from the old one except a valid pending invitation intent (ADR-011,
+    ADR-013), whether the browser was anonymous, signed in as the same account or as another one; the
+    old session row is deleted by the key rotation. ``login()`` also rotates the CSRF token. The
+    password authentication is recorded the way django-allauth does, so its recent-reauthentication
+    checks (Backend#35) see it.
+    """
+    from allauth.account.internal.flows.login import record_authentication
+
+    session = request.session
+    intent = get_invitation_intent(session)
+    session.clear()
+    login(request, user, backend=backend)
+    if intent is not None:
+        set_invitation_intent(session, intent.invitation_id, intent.generation)
+    record_authentication(request, user, method="password")
 
 
 # ---- invitation intent (ADR-013) -------------------------------------------------------------------
