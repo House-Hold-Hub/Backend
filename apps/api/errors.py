@@ -25,6 +25,14 @@ class ErrorCode(StrEnum):
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
+class Conflict(exceptions.APIException):
+    """409 ``CONFLICT``: a duplicate resource or an invalid lifecycle transition (never a concurrent write)."""
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "The request conflicts with the current state."
+    default_code = "conflict"
+
+
 def error_body(code, message, fields=None):
     body = {"code": str(code), "message": message}
     if fields:
