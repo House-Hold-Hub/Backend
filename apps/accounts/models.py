@@ -2,6 +2,7 @@ import uuid
 
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
+from django.contrib.sessions.base_session import AbstractBaseSession
 from django.db import models
 from django.db.models import Q
 from django.db.models.functions import Lower
@@ -70,7 +71,8 @@ class User(AbstractUser):
       django-allauth ``SocialAccount`` rows.
     - Email verification is *not* stored here: it is derived from django-allauth's
       ``EmailAddress`` (``is_email_verified``), so no duplicate flag can drift.
-    - ``is_active`` is the disabled/enabled lifecycle state; a disabled user cannot authenticate.
+    - ``is_active`` is the disabled/enabled lifecycle state; a disabled user cannot authenticate, and
+      every change of it (disable or restoration) revokes all of the account's sessions (``Session``).
 
     ``username``, ``first_name`` and ``last_name`` of ``AbstractUser`` are removed: the identity
     is the email and the display name is the single ``name`` field.
@@ -135,3 +137,27 @@ class User(AbstractUser):
         if not self.email:
             return False
         return EmailAddress.objects.filter(user_id=self.pk, email=self.email, verified=True).exists()
+
+
+class Session(AbstractBaseSession):
+    """A database-backed Django session that is also the indexed user-session registry (ADR-011).
+
+    ``user`` is written by ``apps.accounts.sessions.SessionStore`` from the authenticated user id in
+    the payload, in the same statement that stores the payload, so ownership cannot drift from the
+    session it describes. Revocation deletes rows by this indexed column and never decodes or scans
+    ``session_data``. Anonymous sessions have no owner.
+
+    Changing ``User.is_active`` (disable or restoration) deletes every session of the account in the
+    database itself (trigger from migration 0003), whichever way the row is written. Deleting a user
+    deletes its sessions.
+
+    No device-management view or activity tracking reads this table (ADR-011, PRD Identity).
+    """
+
+    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name="+")
+
+    @classmethod
+    def get_session_store_class(cls):
+        from .sessions import SessionStore
+
+        return SessionStore

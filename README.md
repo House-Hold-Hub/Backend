@@ -139,6 +139,31 @@ has no verified email before the view's permission classes run, unless the view 
 Only public operations and the verification lifecycle the contract allows before verification (`getCurrentUser`,
 `resendEmailVerification`, `logout`) may set it; `check_api_contract` fails any other operation that does.
 
+### Sessions and revocation (`apps/accounts/sessions.py`)
+
+Sessions are Django's database-backed sessions (`SESSION_ENGINE = "apps.accounts.sessions"`, 14-day expiry) stored
+in `accounts.Session`, whose indexed `user` column is the user-session registry (ADR-011). The engine writes the
+column whenever it writes the payload, so revocation deletes rows by owner without decoding or scanning payloads, and
+a revoked cookie is anonymous on its next request.
+
+| Event | Result | Wired through |
+|---|---|---|
+| Logout | Current session revoked | `logout()` |
+| Password reset | All sessions revoked | allauth `password_reset` |
+| Authenticated password change or set | Current rotated, others revoked | allauth `password_changed` / `password_set` |
+| Primary-email change | Current rotated, others revoked | allauth `email_changed` |
+| Google link or unlink | Current rotated, others revoked | allauth `social_account_added` / `social_account_removed` |
+| Disable (`is_active` false) | All sessions revoked | database trigger (any write path) |
+| Restoration (`is_active` true) | All sessions revoked; fresh login required | database trigger |
+
+`revoke_all_sessions`, `revoke_other_sessions` and `rotate_and_revoke_others` are the reusable entry points (for
+example for a future soft deletion). Rotation at an identity change keeps only the approved keys
+(`ROTATION_PRESERVED_KEYS`: Django's authentication keys and expiry override, allauth's authentication records and
+the invitation intent) and rotates the CSRF token; login rotation is Django's and keeps the pre-login session. The
+ADR-013 invitation intent is set only through `set_invitation_intent(session, invitation_id: UUID, generation: int)`,
+so a bearer token cannot be stored there. Django's authentication hash still invalidates sessions after any password
+change. Expired rows are removed by the scheduled `python manage.py clearsessions`.
+
 ## API (`/api/v1`)
 
 The wire contract is owned by Documentation (`api/openapi.yaml`, ADR-014). Backend implements it and

@@ -114,7 +114,10 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # ADR-011: database-backed sessions, 14-day expiry, HttpOnly session cookie,
 # readable CSRF cookie (sent back as X-CSRFToken), SameSite=Lax for OAuth redirects.
-SESSION_ENGINE = "django.contrib.sessions.backends.db"
+# The engine is Django's database store on accounts.Session, whose indexed user column is the
+# user-session registry used for revocation (apps/accounts/sessions.py). django.contrib.sessions
+# stays installed for its middleware and the scheduled `clearsessions` cleanup command.
+SESSION_ENGINE = "apps.accounts.sessions"
 SESSION_COOKIE_AGE = 14 * 24 * 60 * 60
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
