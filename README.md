@@ -31,9 +31,36 @@ Tool versions are pinned by `uv.lock`; configuration lives in `pyproject.toml`.
 Coverage (pytest-cov) is informational only: the table appears in the workflow run summary linked from the PR
 checks, and `coverage.xml` is uploaded as an artifact. There is no percentage threshold.
 
-Branch protection is owned by Automation#2 and is **not yet configured**. Once it is, the checks to require are
-`Lint`, `Type check`, `Test` and `Contract drift` (from `api-contract.yml`). Until then the issue's
-"status check required for merge" criterion is not met. Job names are stable; renaming one breaks the required check.
+### Gates (secret scan and dependency security)
+
+`.github/workflows/gates.yml` runs on `pull_request` and on pushes to `main` and calls the shared reusable
+workflows of Automation (Automation#2, `docs/shared-gates.md`), pinned by full commit SHA of Automation `main`.
+Bump the SHA deliberately; never reference a branch or a moving tag.
+
+| Status check name | Gate |
+|---|---|
+| `Secret scan / scan` | Gitleaks over the commits a pull request adds (older history is scanned on pushes to `main`); findings are redacted. Uses `.gitleaks.toml` if present, else the built-in rules |
+| `Dependency security / scan` | OSV-Scanner over `uv.lock`; fails on any known vulnerability, no severity threshold |
+
+Not repeated here on purpose: lint, type-check and tests (`ci.yml`), contract drift (`api-contract.yml`) and OpenAPI
+validation (the specification is owned and validated by Documentation, ADR-014). There is no coverage threshold.
+
+### Branch protection
+
+Required checks on `main`: `Lint`, `Type check`, `Test`, `Contract drift`, `Secret scan / scan` and
+`Dependency security / scan`, all bound to GitHub Actions. A pull request is required (0 approvals), administrators
+are not exempt, and force-push and branch deletion are disallowed. Job and workflow names are stable: renaming one
+changes the published check name and silently drops the protection, so update the protection in the same change.
+Do not add `paths:` filters to these workflows; a required check skipped by a path filter stays pending forever.
+
+### GitHub-native security features
+
+Secret scanning, push protection and Dependabot security updates are **repository settings**, not code. They cannot
+be required status checks (push protection can reject a push, alerts never block a merge), and this repository's
+workflows cannot enable them. When last checked through the API (`security_and_analysis`, 2026-10-16) all were
+**disabled** (secret scanning, push protection, non-provider patterns, validity checks, Dependabot security updates),
+and the gates above did not change that. Until a repository administrator enables them, the two checks above are the
+only automated coverage, and a secret pushed straight to a branch is detected only once a pull request is opened.
 
 Locally (with PostgreSQL reachable per `.env.example`):
 
