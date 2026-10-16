@@ -124,6 +124,18 @@ the Membership app provides it, and subclasses encode `product/permissions-matri
 `ImproperlyConfigured`. There is no PostgreSQL RLS and permission classes don't filter querysets: list views must
 filter by household themselves.
 
+### Transactional email (`apps/email_delivery`, ADR-015)
+
+Send only through `service.queue_email()` inside the domain `transaction.atomic()` (it refuses otherwise): it
+persists a minimal `EmailDelivery` row and submits via `on_commit` through the provider-neutral
+`adapter.EmailProvider` with a bounded timeout. `_submit` claims the row (`pending` -> `submitting`) before the
+provider call, never raises for provider errors, and stores `accepted` (provider acceptance only, never "delivered"),
+`failed` (not accepted) or `unknown` (timeout/interrupted/unexpected) with a fixed `error_class`. Never store or log
+the recipient, token, URL, body or exception text; `test_sensitive_data.py` pins the column allowlist, so adding a
+column needs security review. Providers raise only the `ProviderError` subclasses in `adapter.py`. D02 is open: the
+default provider is `UnconfiguredProvider`; tests install `testing.RecordingProvider` through the `use_provider`
+fixture. Recovery is a new delivery from the owning flow plus the `reconcile_email_deliveries` command.
+
 ### Tests
 
 pytest-django with `config.settings`; tests live beside the code (`apps/<app>/tests/` or `apps/<app>/test_*.py`).

@@ -139,6 +139,32 @@ has no verified email before the view's permission classes run, unless the view 
 Only public operations and the verification lifecycle the contract allows before verification (`getCurrentUser`,
 `resendEmailVerification`, `logout`) may set it; `check_api_contract` fails any other operation that does.
 
+### Transactional email (`apps/email_delivery`)
+
+ADR-015: `queue_email(message, template=..., subject_type=..., subject_id=...)` runs inside the domain
+`transaction.atomic()`, persists an `EmailDelivery` row with the domain state and registers
+`transaction.on_commit()`. After the commit one bounded synchronous call goes to the provider-neutral adapter
+(`adapter.EmailProvider`, timeout `EMAIL_DELIVERY["TIMEOUT_SECONDS"]`), and the outcome is stored. A rollback
+discards the row and the email; a provider failure never raises into the caller and never undoes the commit.
+
+| Status | Meaning |
+|---|---|
+| `pending` | Recorded; the post-commit callback has not claimed it |
+| `submitting` | Claimed and persisted before the provider call (a leftover means the process was interrupted) |
+| `accepted` | The provider accepted the submission. **Not** confirmation of inbox delivery |
+| `failed` | Not accepted (`rejected`, `unavailable`, `not_configured`, `not_submitted`): safe to resend |
+| `unknown` | Outcome unknowable (`timeout`, `interrupted`, `unexpected`): treat as possibly sent |
+
+`failed` and `unknown` are recoverable by the owning flow issuing a new delivery (resend with a fresh token); the
+message is never stored, so a record cannot be replayed. `manage.py reconcile_email_deliveries` (idempotent;
+schedule it like the other cleanup commands) settles records an interrupted process left behind. Records hold only
+identifiers, status, attempt count/timing, the provider request id and a fixed error class: no recipient, token,
+link or body, and the logs carry the delivery id only. No queue, Redis, Celery or worker is involved.
+
+The managed provider is still open (D02): the default `UnconfiguredProvider` records `failed`/`not_configured`,
+and `apps.email_delivery.testing.RecordingProvider` is the test double. `EMAIL_DELIVERY` is a settings constant,
+not environment variables, so Infrastructure's `.env.example` is unaffected.
+
 ### Sessions and revocation (`apps/accounts/sessions.py`)
 
 Sessions are Django's database-backed sessions (`SESSION_ENGINE = "apps.accounts.sessions"`, 14-day expiry) stored
