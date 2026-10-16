@@ -115,8 +115,11 @@ URLconfs (`base_spec()`, `urlconf()` in `test_contract_check.py`) rather than re
 1. The operation must exist in the pinned contract; if it doesn't, change Documentation first and bump the pin in
    this PR.
 2. Subclass `ApiView`, or put `ContractViewMixin` leftmost on a DRF generic view or viewset, and keep the default
-   authentication. `ApiView` and `ViewSet` have no paginator: a paginated operation on them must set
-   `pagination_class = PageLimitPagination` (generic views and `GenericViewSet` inherit it).
+   authentication. Setting `pagination_class` on `ApiView` or `ViewSet` only satisfies `check_api_contract`: those
+   bases never invoke a paginator, so a paginated operation on them must set
+   `pagination_class = PageLimitPagination` and also paginate explicitly (instantiate it and call
+   `paginate_queryset()` and `get_paginated_response()`). Generic views and `GenericViewSet` inherit the class, and
+   their list mixin paginates; a custom action on them must still call `paginate_queryset()` itself.
 3. Route it in `apps/api/urls.py` (mounted at `api/v1/`) with `path()`, no trailing slash, and converters matching
    the contract, e.g. `households/<uuid:household_id>/tasks`. Of the DRF routers only
    `SimpleRouter(trailing_slash=False, use_regex_path=False)` passes the check (set `lookup_value_converter = "uuid"`
