@@ -100,6 +100,18 @@ operations (a restricted session may call them) and the pre-verification lifecyc
 operation that sets it. Tests that authenticate must use a verified, saved user (the `user` fixture / `make_user`):
 the gate reads the database, so an unsaved `User` is denied.
 
+### Sessions and revocation (`apps/accounts/sessions.py`)
+
+The session engine is Django's database store on `accounts.Session`, whose indexed `user` column is the ADR-011
+user-session registry: `SessionStore` writes it from the payload on every save, so revoke by deleting rows filtered by
+`user_id` and never decode `session_data`. Use `revoke_all_sessions` / `revoke_other_sessions` /
+`rotate_and_revoke_others`, which lock the user row (`FOR NO KEY UPDATE`) like the store's `save()` and `cycle_key()`
+do; an unlocked delete can miss a session being rotated concurrently. `signals.py` wires the allauth events of the
+revocation matrix; a database trigger from `0003_session_registry` deletes every session when `User.is_active`
+changes, including through `QuerySet.update`. Session state that must survive an identity rotation is listed in
+`ROTATION_PRESERVED_KEYS`; the invitation intent goes only through `set_invitation_intent`. Tests use one `Client`
+per browser (`test_sessions.py`) and threads on separate connections for races (`test_session_concurrency.py`).
+
 ### Household-scoped authorization (`apps/api/permissions.py`)
 
 `HouseholdScopedPermission` fixes the evaluation order (ADR-005, ADR-012): 401 when unauthenticated; 404 without an
