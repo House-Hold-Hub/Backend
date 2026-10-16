@@ -1,0 +1,27 @@
+name: Gates
+
+# Shared Automation gates (Automation#2): secret scan and dependency security.
+# Contract drift lives in api-contract.yml; lint/type/test in ci.yml; OpenAPI validation is owned by Documentation (ADR-014).
+# No path filters: these jobs are required status checks.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan
+    # Automation main
+    uses: House-Hold-Hub/Automation/.github/workflows/secret-scan.yml@5eeae49dfbef5c30fadb4d2ab8a83db068c01488
+
+  dependency-security:
+    name: Dependency security
+    # Automation main
+    uses: House-Hold-Hub/Automation/.github/workflows/dependency-security.yml@5eeae49dfbef5c30fadb4d2ab8a83db068c01488
+    with:
+      lockfiles: |
+        uv.lock
