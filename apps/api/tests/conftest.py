@@ -1,7 +1,4 @@
-import uuid
-
 import pytest
-from django.contrib.auth import get_user_model
 from django.test import override_settings
 from rest_framework.test import APIClient
 
@@ -22,8 +19,9 @@ def api_urls():
 
 
 @pytest.fixture
-def user():
-    return get_user_model()(id=uuid.uuid4(), username="member")
+def user(make_user):
+    """A verified, active account: the only kind that may use protected operations."""
+    return make_user("member@example.com")
 
 
 @pytest.fixture

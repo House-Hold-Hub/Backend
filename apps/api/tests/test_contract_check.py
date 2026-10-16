@@ -101,6 +101,10 @@ class Unpaginated(Protected):
     pagination_class = None
 
 
+class UnverifiedAllowed(Protected):
+    allow_unverified = True
+
+
 class RawApiView(APIView):  # bypasses ContractViewMixin
     permission_classes = [AllowAny]
 
@@ -165,6 +169,27 @@ def test_protected_in_contract_but_public_in_code_fails():
 def test_view_without_contract_base_class_fails_even_if_otherwise_conforming():
     spec = base_spec({"/open": {"get": op(security=[])}})
     assert codes(contract.check(spec, urlconf(path("open", RawApiView.as_view())))) == ["NOT_CONTRACT_VIEW"]
+
+
+def _named(operation_id, **kwargs):
+    return {**op(**kwargs), "operationId": operation_id}
+
+
+@pytest.mark.parametrize("operation_id", sorted(contract.UNVERIFIED_ACCESS_OPERATIONS))
+def test_verification_lifecycle_operations_may_allow_unverified_accounts(operation_id):
+    spec = base_spec({"/ping": {"get": _named(operation_id)}})
+    assert contract.check(spec, urlconf(path("ping", UnverifiedAllowed.as_view()))).findings == []
+
+
+def test_other_protected_operations_cannot_be_opened_to_unverified_accounts():
+    spec = base_spec({"/ping": {"get": _named("listHouseholds")}})
+    report = contract.check(spec, urlconf(path("ping", UnverifiedAllowed.as_view())))
+    assert codes(report) == ["UNVERIFIED_ACCESS"]
+
+
+def test_protected_operations_deny_unverified_accounts_by_default():
+    spec = base_spec({"/ping": {"get": _named("listHouseholds")}})
+    assert contract.check(spec, urlconf(path("ping", Protected.as_view()))).findings == []
 
 
 def test_unsafe_contract_operation_must_declare_csrf_header():

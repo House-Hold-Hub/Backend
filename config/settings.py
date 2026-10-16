@@ -95,6 +95,16 @@ AUTHENTICATION_BACKENDS = [
     "allauth.account.auth_backends.AuthenticationBackend",
 ]
 
+# django-allauth (ADR-010, ADR-011): the normalized email is the only login identity, the user
+# model has no username, and email ownership must be verified. Verified-email state lives in
+# allauth's EmailAddress (User.is_email_verified); rate limits and token lifetimes stay at
+# allauth defaults until the deferred decision D01 is made.
+ACCOUNT_USER_MODEL_USERNAME_FIELD = None
+ACCOUNT_LOGIN_METHODS = {"email"}
+ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*"]
+ACCOUNT_UNIQUE_EMAIL = True
+ACCOUNT_EMAIL_VERIFICATION = "mandatory"
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
