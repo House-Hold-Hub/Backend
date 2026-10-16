@@ -1,0 +1,6 @@
+title = "throwaway negative test"
+
+[[rules]]
+id = "hhh-fixture-marker"
+description = "Synthetic fixture marker (not a credential)"
+regex = '''HHH-FIXTURE-MARKER-[A-Z0-9]{16}'''
