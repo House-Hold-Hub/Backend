@@ -17,7 +17,8 @@ from django.core.exceptions import ImproperlyConfigured
 from django.utils.module_loading import import_string
 
 MAX_TIMEOUT_SECONDS = 30.0
-_REQUEST_ID = re.compile(r"[A-Za-z0-9._:@+=-]{1,128}")
+# Deliberately narrow: no "@" or ".", so an address or hostname can never pass as a request id.
+_REQUEST_ID = re.compile(r"[A-Za-z0-9_:-]{1,128}")
 
 
 @dataclass(frozen=True, repr=False)
@@ -47,9 +48,17 @@ class ProviderReceipt:
 
 
 class ProviderError(Exception):
-    """Base class of every failure a provider may raise. Messages are never stored or logged."""
+    """Base class of every failure a provider may raise. Messages are never stored or logged.
+
+    A bare ``ProviderError`` (or a subclass that does not say otherwise) is an unclassified failure:
+    the provider may have accepted the message, so the outcome is recorded as unknown.
+    """
 
     error_class = "unexpected"
+
+
+# Error classes that state the provider did NOT accept the message; every other class is "unknown".
+DEFINITIVE_REFUSALS = frozenset({"not_configured", "unavailable", "rejected"})
 
 
 class ProviderNotConfigured(ProviderError):

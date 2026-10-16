@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from apps.email_delivery import service
 from apps.email_delivery.adapter import (
+    ProviderError,
     ProviderNotConfigured,
     ProviderReceipt,
     ProviderRejected,
@@ -49,13 +50,13 @@ def test_provider_is_called_only_after_commit(message, use_provider, django_capt
 def test_successful_submission_records_acceptance_not_delivery(
     message, use_provider, django_capture_on_commit_callbacks, settings
 ):
-    provider = use_provider(request_id="req-abc.123")
+    provider = use_provider(request_id="req_abc-123:7")
     subject_id = uuid.uuid4()
     delivery = send(message, django_capture_on_commit_callbacks, subject_type="invitation", subject_id=subject_id)
 
     assert delivery.status == Status.ACCEPTED
     assert delivery.attempt_count == 1
-    assert delivery.provider_request_id == "req-abc.123"
+    assert delivery.provider_request_id == "req_abc-123:7"
     assert delivery.error_class == ""
     assert delivery.last_attempt_at and delivery.completed_at
     assert (delivery.subject_type, delivery.subject_id) == ("invitation", subject_id)
@@ -93,6 +94,7 @@ def test_queueing_outside_a_transaction_is_refused(message):
         (ProviderRejected("bad recipient"), Status.FAILED, "rejected"),
         (ProviderNotConfigured(), Status.FAILED, "not_configured"),
         (ProviderTimeout("slow"), Status.UNKNOWN, "timeout"),
+        (ProviderError("unclassified"), Status.UNKNOWN, "unexpected"),
         (RuntimeError("boom"), Status.UNKNOWN, "unexpected"),
         (ConnectionResetError("reset"), Status.UNKNOWN, "unexpected"),
     ],
@@ -189,7 +191,11 @@ def test_a_non_receipt_result_is_not_treated_as_acceptance(message, use_provider
 
 @pytest.mark.parametrize(
     ("request_id", "stored"),
-    [("req_1:abc-2", "req_1:abc-2"), ("has space", ""), ("https://x/?t=secret", ""), ("a" * 129, ""), ("", "")],
+    [
+        ("req_1:abc-2", "req_1:abc-2"),
+        ("private.person@example.test", ""),
+        ("mail.example.test", ""),
+        ("has space", ""), ("https://x/?t=secret", ""), ("a" * 129, ""), ("", "")],
 )
 def test_provider_request_id_is_stored_only_when_it_is_a_plain_token(request_id, stored):
     assert ProviderReceipt(request_id=request_id).safe_request_id() == stored
@@ -219,6 +225,24 @@ def test_reconciler_settles_only_stale_records(db):
     assert statuses[accepted.pk] == (Status.ACCEPTED, "")
     # Idempotent.
     assert service.reconcile_stale_deliveries(now=now) == {"interrupted": 0, "not_submitted": 0}
+
+
+def test_callback_still_submits_when_the_reconciler_aged_the_row_before_it_ran(
+    message, use_provider, django_capture_on_commit_callbacks
+):
+    # A domain transaction that stayed open past the stale window commits a row that already looks old.
+    provider = use_provider()
+    with django_capture_on_commit_callbacks(execute=False) as callbacks:
+        with transaction.atomic():
+            delivery = queue_email(message, template="email-verification")
+    EmailDelivery.objects.filter(pk=delivery.pk).update(created_at=timezone.now() - datetime.timedelta(hours=1))
+    assert service.reconcile_stale_deliveries() == {"interrupted": 0, "not_submitted": 1}
+    callbacks[0]()
+    delivery.refresh_from_db()
+    assert provider.sent == [message]
+    assert (delivery.status, delivery.error_class) == (Status.ACCEPTED, "")
+    callbacks[0]()  # still never twice
+    assert len(provider.sent) == 1
 
 
 def test_reconcile_command_reports_counts(db, capsys):

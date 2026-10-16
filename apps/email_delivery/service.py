@@ -13,9 +13,11 @@ import logging
 from functools import partial
 
 from django.db import DatabaseError, connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .adapter import (
+    DEFINITIVE_REFUSALS,
     EmailMessage,
     ProviderError,
     ProviderReceipt,
@@ -53,8 +55,12 @@ def queue_email(
 def _submit(delivery_id, message: EmailMessage) -> None:
     now = timezone.now()
     try:
-        claimed = EmailDelivery.objects.filter(pk=delivery_id, status=Status.PENDING).update(
-            status=Status.SUBMITTING, attempt_count=1, last_attempt_at=now
+        # The reconciler ages "pending" from created_at, which predates the commit. If a long domain
+        # transaction lost that race, the callback's own run proves nothing was submitted yet, so it
+        # may still claim a record the reconciler marked "not_submitted".
+        claimable = Q(status=Status.PENDING) | Q(status=Status.FAILED, error_class="not_submitted")
+        claimed = EmailDelivery.objects.filter(claimable, pk=delivery_id).update(
+            status=Status.SUBMITTING, attempt_count=1, last_attempt_at=now, error_class="", completed_at=None
         )
     except DatabaseError:
         # Cannot persist the claim, so do not submit: the record stays pending and nothing was sent.
@@ -85,7 +91,7 @@ def _call_provider(delivery_id, message: EmailMessage) -> tuple[str, str, str]:
         )
     except ProviderError as exc:
         # Only the fixed class is kept; the exception text may echo a recipient, URL or body.
-        status = Status.UNKNOWN if exc.error_class == "timeout" else Status.FAILED
+        status = Status.FAILED if exc.error_class in DEFINITIVE_REFUSALS else Status.UNKNOWN
         return status, exc.error_class, ""
     except Exception:
         return Status.UNKNOWN, "unexpected", ""
