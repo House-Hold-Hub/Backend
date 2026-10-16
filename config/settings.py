@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     "allauth.socialaccount",
     "apps.accounts",
     "apps.api",
+    "apps.email_delivery",
 ]
 
 MIDDLEWARE = [
@@ -125,6 +126,17 @@ SESSION_COOKIE_SECURE = env_bool("DJANGO_SECURE_COOKIES", not DEBUG)
 CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
+
+# ADR-015: transactional email goes through a provider-neutral adapter, called synchronously after the
+# domain commit with a bounded timeout. The managed provider is deferred (D02), so the default records an
+# honest "not configured" failure instead of sending. No environment variables: nothing for Infrastructure
+# to mirror until D02 selects a provider.
+EMAIL_DELIVERY = {
+    "PROVIDER": "apps.email_delivery.adapter.UnconfiguredProvider",
+    "TIMEOUT_SECONDS": 5.0,
+    # A pending/submitting record older than this was left by an interrupted process (reconciler).
+    "STALE_AFTER_SECONDS": 300,
+}
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
