@@ -8,6 +8,7 @@ dependencies = [
     "djangorestframework>=3.18.3",
     "gunicorn>=26.2.0",
     "psycopg[binary]>=3.3.6",
+    "requests==2.19.0",
 ]
 
 [dependency-groups]
