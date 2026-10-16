@@ -4,7 +4,12 @@ from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.db.models import Q
-from django.db.models.functions import Lower, Trim
+from django.db.models.functions import Lower
+
+# Every character Python's ``str.strip()`` treats as whitespace. PostgreSQL's TRIM only removes spaces,
+# so the database checks match this class explicitly to agree with ``normalize_email`` on writes that
+# bypass ``save()`` (bulk_create, QuerySet.update, raw SQL). PostgreSQL ARE syntax.
+WHITESPACE_CLASS = r"[[:space:]\u001c-\u001f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
 
 
 class UserManager(BaseUserManager["User"]):
@@ -94,11 +99,11 @@ class User(AbstractUser):
             # Database-level guarantee behind the unique index: only canonical addresses can be
             # stored, so uniqueness is case-insensitive even for writes that bypass the model.
             models.CheckConstraint(
-                condition=Q(email=Lower(Trim("email"))) & ~Q(email=""),
+                condition=Q(email=Lower("email")) & ~Q(email="") & ~Q(email__regex=WHITESPACE_CLASS),
                 name="accounts_user_email_normalized",
             ),
             models.CheckConstraint(
-                condition=Q(name=Trim("name")) & ~Q(name=""),
+                condition=~Q(name="") & ~Q(name__regex=f"^{WHITESPACE_CLASS}|{WHITESPACE_CLASS}$"),
                 name="accounts_user_name_not_blank",
             ),
         ]

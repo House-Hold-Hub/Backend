@@ -1,3 +1,4 @@
+import sys
 import uuid
 
 import pytest
@@ -47,6 +48,7 @@ def test_identity_fields():
         ("alice@example.com", "alice@example.com"),
         ("  Alice@Example.COM \n", "alice@example.com"),
         ("ALICE@EXAMPLE.COM", "alice@example.com"),
+        ("\t\u00a0Alice@Example.com\r\n", "alice@example.com"),
         # Provider-specific rewriting is forbidden: dots and +tags are preserved.
         ("a.l.i.c.e+news@Gmail.com", "a.l.i.c.e+news@gmail.com"),
     ],
@@ -123,14 +125,39 @@ def test_model_validation_reports_a_duplicate_email_in_any_case():
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("email", ["Upper@example.com", " padded@example.com", "", "   "])
+@pytest.mark.parametrize("email", ["Upper@example.com", " padded@example.com", "", "   ", "\tpadded@example.com\n"])
 def test_database_rejects_non_canonical_email_even_when_the_model_is_bypassed(email):
     with pytest.raises(IntegrityError), transaction.atomic():
         User.objects.bulk_create([User(email=email, name="Bypass", password="!")])
 
 
+# Every character Python's strip() removes: PostgreSQL's TRIM only removes spaces, so the checks must agree.
+WHITESPACE = [chr(c) for c in range(sys.maxunicode + 1) if chr(c).isspace()]
+
+
+def test_the_whitespace_set_is_what_strip_removes():
+    assert all((ch + "x" + ch).strip() == "x" for ch in WHITESPACE)
+    assert len(WHITESPACE) >= 25
+
+
 @pytest.mark.django_db
-@pytest.mark.parametrize("name", ["", " leading", "trailing "])
+@pytest.mark.parametrize("ch", WHITESPACE, ids=lambda ch: f"U+{ord(ch):04X}")
+def test_database_rejects_any_whitespace_padding_python_would_strip(ch):
+    for email, name in [(f"{ch}pad@example.com", "Pad"), (f"pad@example.com{ch}", "Pad"), ("pad@example.com", f"{ch}Pad"), ("pad@example.com", f"Pad{ch}")]:
+        with pytest.raises(IntegrityError), transaction.atomic():
+            User.objects.bulk_create([User(email=email, name=name, password="!")])
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("ch", WHITESPACE, ids=lambda ch: f"U+{ord(ch):04X}")
+def test_save_normalizes_whitespace_so_the_database_accepts_it(ch):
+    user = User.objects.create_user(email=f"{ch}pad@example.com{ch}", name=f"{ch}Pad{ch}")
+    user.refresh_from_db()
+    assert (user.email, user.name) == ("pad@example.com", "Pad")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("name", ["", " leading", "trailing ", "\tTabbed"])
 def test_database_rejects_blank_or_untrimmed_display_name(name):
     with pytest.raises(IntegrityError), transaction.atomic():
         User.objects.bulk_create([User(email="n@example.com", name=name, password="!")])
