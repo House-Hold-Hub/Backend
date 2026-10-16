@@ -41,8 +41,8 @@ docker build -t householdhub-backend .     # run and migrate invocations: README
   with `INTERNAL ERROR ... Error constructing plugin instance of NewSemanalDjangoPlugin`. The `setdefault` in the
   root `conftest.py` does not help: pytest-django imports settings before any conftest is loaded.
 - The database engine is hard-coded to PostgreSQL (no SQLite fallback), so `django_db` tests need a reachable server;
-  CI provides a `postgres:17` service with database and user `householdhub`. Tests that need no database use
-  unsaved `User` instances and in-memory membership fixtures.
+  CI provides a `postgres:17` service with database and user `householdhub`. Tests that authenticate a user need
+  the database too (the verification gate reads allauth's `EmailAddress`); in-memory membership fixtures remain.
 - No formatter is enforced and the code is not `ruff format`-clean: don't reformat code you aren't changing. E501 is
   ignored; migrations are excluded from ruff and mypy.
 - CI never builds the Docker image, so verify Dockerfile changes locally. Commit `uv.lock` with every dependency
@@ -90,6 +90,16 @@ operation opts out with `AllowAny` and must be `security: []` in the contract.
 - `pagination.PageLimitPagination` returns `{"data": [...], "meta": {"page", "limit", "total"}}` (limit default 20,
   max 100). Invalid values are 400, not clamped; a page past the end is empty, never 404.
 
+### Verification gate (`views.ContractViewMixin`)
+
+`check_permissions` rejects (403 `AUTHORIZATION_ERROR`) an authenticated account that is disabled or lacks a verified
+allauth email *before* the view's permission classes run, so household classes cannot turn it into a 404 or skip it.
+Anonymous callers still get 401 from the permission classes. A view opts out only with `allow_unverified = True`: public
+operations (a restricted session may call them) and the pre-verification lifecycle in
+`contract.UNVERIFIED_ACCESS_OPERATIONS`; `check_api_contract` reports `UNVERIFIED_ACCESS` for any other protected
+operation that sets it. Tests that authenticate must use a verified, saved user (the `user` fixture / `make_user`):
+the gate reads the database, so an unsaved `User` is denied.
+
 ### Household-scoped authorization (`apps/api/permissions.py`)
 
 `HouseholdScopedPermission` fixes the evaluation order (ADR-005, ADR-012): 401 when unauthenticated; 404 without an
@@ -132,9 +142,12 @@ URLconfs (`base_spec()`, `urlconf()` in `test_contract_check.py`) rather than re
 - PostgreSQL is the only datastore: no Redis, Celery, queue or worker. Scheduled jobs (household purge, session
   cleanup) are idempotent management commands that Infrastructure/Automation schedule. Transactional email goes
   through a provider-neutral adapter called synchronously after commit (ADR-015).
-- `accounts.User` is an `AbstractUser` with a UUID primary key and no bespoke password or `google_id` field; verified
-  email and provider identities use allauth `EmailAddress` / `SocialAccount` (`apps/accounts/test_user_model.py`
-  guards this).
+- `accounts.User` is an `AbstractUser` with a UUID primary key, the normalized email as `USERNAME_FIELD` (unique, with
+  DB check constraints that keep it canonical), a single `name` display field, and no `username`/`first_name`/
+  `last_name`, bespoke password, `google_id` or `email_verified` field. Verified email and provider identities use
+  allauth `EmailAddress` / `SocialAccount`; `User.is_email_verified` derives from `EmailAddress` for the account's
+  current email (`apps/accounts/test_user_model.py`, `test_allauth_integration.py` guard this). Create users with
+  `User.objects.create_user(email=..., name=...)`; verified fixtures come from the root `conftest.py` `make_user`.
 - The topology is same-origin, so no CORS is configured; a cross-origin deployment needs an explicit CORS and
   credential review. Environment variables and defaults are tabled in the README; with `DJANGO_DEBUG=false` the
   cookies default to Secure and `DJANGO_ALLOWED_HOSTS` is required.

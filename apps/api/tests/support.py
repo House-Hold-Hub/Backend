@@ -52,6 +52,7 @@ class UnwiredPermission(HouseholdScopedPermission):
 
 class PublicPost(ApiView):
     permission_classes = [AllowAny]
+    allow_unverified = True  # public operations stay reachable with a restricted (unverified) session
 
     def get(self, request):
         return Response({"ok": True})
@@ -61,6 +62,18 @@ class PublicPost(ApiView):
 
 
 class ProtectedPost(ApiView):
+    def get(self, request):
+        return Response({"ok": True})
+
+    def post(self, request):
+        return Response({"ok": True})
+
+
+class VerificationLifecycle(ApiView):
+    """A protected operation of the pre-verification lifecycle (status, resend, logout)."""
+
+    allow_unverified = True
+
     def get(self, request):
         return Response({"ok": True})
 
@@ -169,6 +182,7 @@ urlpatterns = [
     path("api/v1/csrf", csrf_bootstrap),
     path("api/v1/public", PublicPost.as_view()),
     path("api/v1/protected", ProtectedPost.as_view()),
+    path("api/v1/lifecycle", VerificationLifecycle.as_view()),
     path("api/v1/boom", Boom.as_view()),
     path("api/v1/numbers", Numbers.as_view()),
     path("api/v1/households/<uuid:household_id>/items", HouseholdItems.as_view()),

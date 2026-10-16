@@ -125,8 +125,19 @@ docker run --rm \
 | `POSTGRES_USER` | `householdhub` | |
 | `POSTGRES_PASSWORD` | (empty) | |
 
-The `accounts.User` model is a UUID-keyed skeleton; its completion and the initial migration
-are tracked in Backend#2.
+### Identity (`apps/accounts`)
+
+`accounts.User` is the UUID-keyed authentication principal (ADR-010, ADR-011): the normalized email
+(whitespace trimmed, lower case, no provider-specific rewriting) is the unique login identity, enforced by a
+unique index plus a database check that only canonical addresses are stored; `name` is the display name; passwords
+are Django's; provider identities are allauth `SocialAccount` rows. `is_active` is the disabled state. Email
+verification is not stored on the user: `User.is_email_verified` reads allauth's `EmailAddress` (a verified row for
+the account's current email), so there is no duplicate flag.
+
+Verification gate: `apps.api.views.ContractViewMixin` answers 403 to an authenticated account that is disabled or
+has no verified email before the view's permission classes run, unless the view sets `allow_unverified = True`.
+Only public operations and the verification lifecycle the contract allows before verification (`getCurrentUser`,
+`resendEmailVerification`, `logout`) may set it; `check_api_contract` fails any other operation that does.
 
 ## API (`/api/v1`)
 

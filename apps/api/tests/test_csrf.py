@@ -1,6 +1,3 @@
-import uuid
-
-from django.contrib.auth import get_user_model
 from rest_framework.test import APIRequestFactory
 
 from . import support
@@ -44,8 +41,8 @@ def test_unauthenticated_call_to_protected_operation_is_401_even_without_csrf_to
     assert response.status_code == 401
 
 
-def test_session_authenticated_user_is_csrf_checked_by_session_authentication():
+def test_session_authenticated_user_is_csrf_checked_by_session_authentication(user):
     request = APIRequestFactory(enforce_csrf_checks=True).post("/api/v1/protected", {}, format="json")
-    request.user = get_user_model()(id=uuid.uuid4(), username="s")  # what AuthenticationMiddleware provides
+    request.user = user  # what AuthenticationMiddleware provides
     response = support.ProtectedPost.as_view()(request)
     assert response.status_code == 403

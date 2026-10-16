@@ -43,6 +43,11 @@ PIN_PATH = Path(settings.BASE_DIR) / "contract" / "documentation-revision.json"
 _ROUTE_PARAM = re.compile(r"<(?:(?P<converter>[^>:]+):)?(?P<name>[^>]+)>")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+# Protected operations an authenticated but unverified account may call: the verification
+# lifecycle (PRD Identity IA-FR-004, security model "Identity and email verification"; contract
+# operations getCurrentUser = verification status, resendEmailVerification, logout = cancel).
+# Every other protected operation must keep the verification gate of ``ContractViewMixin``.
+UNVERIFIED_ACCESS_OPERATIONS = frozenset({"getCurrentUser", "resendEmailVerification", "logout"})
 
 
 class ContractError(Exception):
@@ -262,6 +267,17 @@ def _check_operation(spec, report, route, op):
             subject,
             "Contract declares the operation public (security: [])." if contract_public
             else "Contract requires a session; the view admits anonymous callers.",
+        )
+    if (
+        not contract_public
+        and getattr(cls, "allow_unverified", False)
+        and op.get("operationId") not in UNVERIFIED_ACCESS_OPERATIONS
+    ):
+        report.add(
+            "UNVERIFIED_ACCESS",
+            subject,
+            "Only the verification lifecycle may be reachable before email verification "
+            f"({', '.join(sorted(UNVERIFIED_ACCESS_OPERATIONS))}); remove allow_unverified from the view.",
         )
     if not contract_public and not any(issubclass(a, ApiSessionAuthentication) for a in cls.authentication_classes):
         report.add("SESSION_AUTH_MISSING", subject, "Protected operations need ApiSessionAuthentication.")
