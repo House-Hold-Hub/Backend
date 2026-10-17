@@ -1,4 +1,7 @@
-"""CSRF bootstrap, signup, login, logout and current user (Documentation ``api/openapi.yaml``, Backend#8).
+"""Authentication and email lifecycle operations (Documentation ``api/openapi.yaml``, Backend#8, Backend#35).
+
+CSRF bootstrap, signup, login, logout and current user; initial email verification and its resend; the
+primary-email change request and verification.
 
 Security properties (ADR-011, ADR-013, ADR-015, ADR-016):
 
@@ -11,6 +14,14 @@ Security properties (ADR-011, ADR-013, ADR-015, ADR-016):
   closed until the email is verified.
 - Signup and login rotate the session key, keeping only a valid pending invitation intent; logout flushes
   the session, intent included.
+- ``verifyEmail`` consumes an initial-verification bearer without treating it as a login credential: it
+  only rotates the same browser's matching restricted session; any other browser stays as it was.
+  ``resendEmailVerification`` issues a new bearer (superseding the old one) and a new delivery, so a failed
+  delivery is recovered by a rate-limited resend.
+- The primary-email change requires a verified account and a recent authentication in the current session
+  (ADR-016: 5 minutes) for both the request and the verification, and the verification must happen in the
+  session that requested the change. Completing it rotates that session, revokes all others and notifies
+  the previous address after the commit.
 - Every response of these operations is ``Cache-Control: private, no-store``.
 """
 
@@ -21,7 +32,7 @@ from django.db import IntegrityError, transaction
 from django.middleware.csrf import get_token
 from psycopg import errors as pg_errors
 from rest_framework import status
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
@@ -30,10 +41,18 @@ from apps.api.views import ApiView
 from apps.email_delivery.models import EmailDelivery
 from apps.ratelimit import limiter
 
+from .email_change import complete_primary_email_change, request_primary_email_change
 from .models import User
-from .serializers import LoginSerializer, SignupSerializer, delivery_summary, user_response
-from .sessions import establish_session
-from .verification import issue_email_verification
+from .serializers import (
+    LoginSerializer,
+    PrimaryEmailChangeSerializer,
+    SignupSerializer,
+    VerifierSerializer,
+    delivery_summary,
+    user_response,
+)
+from .sessions import establish_session, recently_authenticated, rotate_session
+from .verification import EmailAlreadyVerified, issue_email_verification, verify_initial_email
 
 PASSWORD_BACKEND = "django.contrib.auth.backends.ModelBackend"
 NO_STORE = "private, no-store"
@@ -139,3 +158,81 @@ class CurrentUserView(AuthView):
 
     def get(self, request):
         return Response(user_response(request.user))
+
+
+def require_recent_authentication(request) -> None:
+    """403 unless the current session authenticated within the ADR-016 recent-reauthentication window."""
+    if not recently_authenticated(request):
+        raise PermissionDenied()
+
+
+class VerifyEmailView(AuthView):
+    """``verifyEmail``: 204; 400 for a malformed body or any unusable bearer; 409 when already verified; 429.
+
+    Public, so a restricted session or no session at all may call it. The bearer verifies the account's
+    email and never authenticates: only when this browser's session is the bearer account's restricted
+    session is that session rotated (keeping its invitation intent); otherwise no session is created,
+    changed or upgraded, and the user logs in normally.
+    """
+
+    permission_classes = [AllowAny]
+    allow_unverified = True
+
+    def post(self, request):
+        limiter.consume("verify_email_ip", request=request)
+        serializer = VerifierSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = verify_initial_email(serializer.validated_data["verifier"])
+        if request.user.is_authenticated and request.user.pk == user.pk:
+            rotate_session(request)  # the session's privileges just changed
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ResendEmailVerificationView(AuthView):
+    """``resendEmailVerification``: 200 with the new delivery; 401; 409 when already verified; 429.
+
+    The new bearer supersedes every earlier one. A delivery failure is reported, never rolled back: the
+    account keeps a usable bearer and may resend again within the rate limits.
+    """
+
+    allow_unverified = True
+
+    def post(self, request):
+        user = request.user
+        if user.is_email_verified:
+            raise EmailAlreadyVerified()
+        limiter.consume("resend_email_verification_user", user=user)
+        with transaction.atomic():
+            issued = issue_email_verification(request, user)  # takes the account lock first
+            if user.is_email_verified:  # verified concurrently: re-read under the lock
+                raise EmailAlreadyVerified()
+        delivery = EmailDelivery.objects.get(pk=issued.delivery.pk)
+        return Response({"delivery": delivery_summary(delivery)})
+
+
+class RequestPrimaryEmailChangeView(AuthView):
+    """``requestPrimaryEmailChange``: 202 with the delivery; 400; 401; 403 without recent authentication; 409; 429."""
+
+    def post(self, request):
+        require_recent_authentication(request)
+        limiter.consume("email_change_user", user=request.user)
+        serializer = PrimaryEmailChangeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_email = serializer.validated_data["new_email"]
+        limiter.consume("email_change_email", email=new_email)
+        with transaction.atomic():
+            requested = request_primary_email_change(request, request.user, new_email)
+        delivery = EmailDelivery.objects.get(pk=requested.delivery.pk)
+        return Response({"delivery": delivery_summary(delivery)}, status=status.HTTP_202_ACCEPTED)
+
+
+class VerifyPrimaryEmailChangeView(AuthView):
+    """``verifyPrimaryEmailChange``: 204 with a rotated session; 400; 401; 403 without recent authentication; 409; 429."""
+
+    def post(self, request):
+        require_recent_authentication(request)
+        limiter.consume("verify_email_change_user", user=request.user)
+        serializer = VerifierSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        complete_primary_email_change(request, request.user, serializer.validated_data["verifier"])
+        return Response(status=status.HTTP_204_NO_CONTENT)

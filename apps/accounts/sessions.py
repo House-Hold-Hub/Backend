@@ -25,7 +25,8 @@ Account restoration                    The same trigger deletes every session wh
 =====================================  ===============================================================
 
 The receivers live in ``signals.py``. Recent reauthentication, required before a primary-email change
-and before linking or unlinking, is enforced by the endpoints that perform those changes, not here.
+and before linking or unlinking, is enforced by the endpoints that perform those changes with
+``recently_authenticated``.
 
 Concurrency: every write that gives a row an owner, every rotation of an owned session and every
 revocation take a row lock on the owning ``User`` (``FOR NO KEY UPDATE``, which an ``UPDATE`` of the
@@ -40,6 +41,7 @@ flushed by ``django.contrib.auth.get_user`` on its next request.
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -52,11 +54,13 @@ from django.contrib.sessions.backends.db import SessionStore as DatabaseSessionS
 from django.core.exceptions import ValidationError
 from django.db import router, transaction
 from django.middleware.csrf import rotate_token
+from django.utils.crypto import salted_hmac
 
 if TYPE_CHECKING:
     from .models import Session
 
 INVITATION_INTENT_SESSION_KEY = "householdhub_invitation_intent"
+SESSION_BINDING_SALT = "householdhub.accounts.session-binding"
 
 # The only session state that survives ``rotate_session`` (security model: "Only explicitly approved,
 # non-secret state may survive rotation"). Django's authentication keys and expiry override keep the
@@ -258,6 +262,44 @@ def establish_session(request, user, *, backend: str) -> None:
     if intent is not None:
         set_invitation_intent(session, intent.invitation_id, intent.generation)
     record_authentication(request, user, method="password")
+
+
+def recently_authenticated(request) -> bool:
+    """Whether the current session authenticated within ``ACCOUNT_REAUTHENTICATION_TIMEOUT`` (ADR-016: 5 minutes).
+
+    Reads the authentication records django-allauth keeps in the session (``establish_session`` writes
+    them through ``record_authentication``), so only an authentication performed *in this session* counts.
+    Unlike allauth's ``did_recently_authenticate`` it never waives the check for an account without a
+    usable password: anything that cannot be established is ``False``.
+    """
+    from allauth.account import app_settings
+    from allauth.account.authentication import get_authentication_records
+
+    user = getattr(request, "user", None)
+    if user is None or not user.is_authenticated or _owner_id(request.session) != user.pk:
+        return False
+    records = get_authentication_records(request)
+    if not isinstance(records, list) or not records or not isinstance(records[-1], dict):
+        return False
+    at = records[-1].get("at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return False
+    return time.time() - at < app_settings.REAUTHENTICATION_TIMEOUT
+
+
+def session_binding(request) -> str | None:
+    """A keyed digest identifying the request's current session, or ``None`` when it has no key yet.
+
+    Binds a database record to the session that created it (the pending primary-email change) without
+    writing the session or persisting its key: HMAC-SHA256 under ``SECRET_KEY`` cannot be turned back into
+    the key, and it changes whenever the key rotates (login, identity-security boundaries), so a binding
+    never carries over into another session. Being derived rather than stored, it needs no session write and
+    cannot be overwritten by a concurrent request of the same session.
+    """
+    key = getattr(getattr(request, "session", None), "session_key", None)
+    if not key:
+        return None
+    return salted_hmac(SESSION_BINDING_SALT, key, algorithm="sha256").hexdigest()
 
 
 # ---- invitation intent (ADR-013) -------------------------------------------------------------------

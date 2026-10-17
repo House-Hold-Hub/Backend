@@ -125,3 +125,77 @@ def test_contract_bounds_match_the_password_validators(spec, settings):
     assert signup["maxLength"] == options["MaximumLengthValidator"]["max_length"]
     login = resolve(spec, spec["components"]["schemas"]["LoginRequest"])["properties"]["password"]
     assert "minLength" not in login and "maxLength" not in login
+
+
+@pytest.mark.django_db
+def test_every_email_lifecycle_operation_conforms(spec, make_user, monkeypatch, django_capture_on_commit_callbacks):
+    from apps.accounts.test_email_lifecycle import age_authentication, issue_bearer, link_of
+    from apps.email_delivery import service
+    from apps.email_delivery.testing import RecordingProvider
+
+    provider = RecordingProvider()
+    monkeypatch.setattr(service, "get_provider", lambda: provider)
+
+    def call(response, path, expected):
+        assert response.status_code == expected, (path, response.status_code, response.content)
+        check(spec, response, path, "post")
+
+    def verify(b, bearer, expected):
+        call(b.post("email/verify", {"verifier": bearer}), "/auth/email/verify", expected)
+
+    def resend(b, expected):
+        call(b.post("email/resend-verification"), "/auth/email/resend-verification", expected)
+
+    def change(b, new_email, expected):
+        call(b.post("email/change", {"new_email": new_email}), "/auth/email/change", expected)
+
+    def change_verify(b, bearer, expected):
+        call(b.post("email/change/verify", {"verifier": bearer}), "/auth/email/change/verify", expected)
+
+    anonymous = Browser()
+    anonymous.csrf()
+    resend(anonymous, 401)
+    change(anonymous, "x@example.com", 401)
+    change_verify(anonymous, "x", 401)
+    verify(anonymous, "unknown", 400)
+
+    account(make_user, "unverified@example.com", verified=False)
+    restricted = Browser()
+    restricted.login("unverified@example.com")
+    with django_capture_on_commit_callbacks(execute=True):
+        resend(restricted, 200)
+    verify(restricted, link_of(provider.sent[-1])[1], 204)  # with a rotated session cookie
+    resend(restricted, 409)
+
+    verified = account(make_user)
+    verify(anonymous, issue_bearer(verified), 409)
+    for _ in range(19):
+        anonymous.post("email/verify", {"verifier": "guess"})
+    verify(anonymous, "guess", 429)
+
+    b = Browser(remote_addr="198.51.100.30")
+    b.login("member@example.com")
+    change(b, "not-an-address", 400)
+    change(b, "member@example.com", 409)
+    with django_capture_on_commit_callbacks(execute=True):
+        change(b, "new.address@example.com", 202)
+    bearer = link_of(provider.sent[-1])[1]
+    change_verify(b, {"bad": "type"}, 400)
+    change_verify(b, "unknown", 409)
+    age_authentication(b, 301)
+    change(b, "other@example.com", 403)
+    change_verify(b, bearer, 403)
+    b.login("member@example.com")
+    for i in range(2):
+        change(b, f"flood{i}@example.com", 202)
+    change(b, "flood9@example.com", 429)  # 5 per hour per user
+    for _ in range(8):
+        b.post("email/change/verify", {"verifier": "guess"})
+    change_verify(b, "guess", 429)  # 10 per 5 minutes per user
+
+    c = Browser(remote_addr="198.51.100.31")
+    account(make_user, "changer@example.com")
+    c.login("changer@example.com")
+    with django_capture_on_commit_callbacks(execute=True):
+        change(c, "changed@example.com", 202)
+    change_verify(c, link_of(provider.sent[-1])[1], 204)  # with a rotated session cookie

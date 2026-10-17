@@ -167,10 +167,10 @@ class EmailVerificationBearer(models.Model):
     """A one-time bearer proving ownership of an account's initial email (ADR-016 "One-time bearer credentials").
 
     The bearer itself is sent only in the email's frontend URI fragment; only its SHA-256 digest is stored.
-    At most one bearer per account is usable: issuing a new one marks the previous one ``superseded_at``
-    (rotation). ``email`` is the address the bearer was issued for, so a bearer never verifies an address
-    the account no longer has. Consumption (``verifyEmail``) and resend belong to Backend#35, which sets
-    ``consumed_at`` atomically with marking the allauth ``EmailAddress`` verified.
+    At most one bearer per account is usable: issuing a new one (signup, ``resendEmailVerification``) marks
+    the previous one ``superseded_at`` (rotation). ``email`` is the address the bearer was issued for, so a
+    bearer never verifies an address the account no longer has. ``verifyEmail`` sets ``consumed_at``
+    atomically with marking the allauth ``EmailAddress`` verified (``verification.verify_initial_email``).
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -193,3 +193,47 @@ class EmailVerificationBearer(models.Model):
 
     def __str__(self):
         return f"EmailVerificationBearer({self.id})"
+
+    def is_usable(self, now) -> bool:
+        return self.superseded_at is None and self.consumed_at is None and self.expires_at > now
+
+
+class PrimaryEmailChange(models.Model):
+    """A pending primary-email change and its one-time bearer (ADR-011, ADR-016, Backend#35).
+
+    Kept apart from ``EmailVerificationBearer``: a change bearer is never accepted by ``verifyEmail`` and an
+    initial-verification bearer never completes a change. The bearer is sent only in the URI fragment of
+    an email to ``new_email``; only its SHA-256 digest is stored. At most one change per account is usable:
+    a new request supersedes the previous one. ``session_binding`` is the keyed digest of the requesting
+    session (``sessions.session_binding``, never the session key): only that session can complete the
+    change, and since it is written with the row under the account lock it always describes the current
+    change, whatever order concurrent requests answer in. The account's current email stays in effect until
+    ``verifyPrimaryEmailChange`` consumes the row, in the same transaction that makes ``new_email`` the
+    verified primary address, rotates the current session and revokes the others. The pending address is
+    not an allauth ``EmailAddress`` until then, so requesting a change never reserves an address.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="+")
+    new_email = models.EmailField(max_length=254)
+    digest = models.CharField(max_length=64, unique=True)
+    session_binding = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(superseded_at__isnull=True, consumed_at__isnull=True),
+                name="accounts_one_usable_primary_email_change",
+            ),
+        ]
+
+    def __str__(self):
+        return f"PrimaryEmailChange({self.id})"
+
+    def is_usable(self, now) -> bool:
+        return self.superseded_at is None and self.consumed_at is None and self.expires_at > now

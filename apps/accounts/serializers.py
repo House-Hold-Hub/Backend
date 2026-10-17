@@ -42,6 +42,21 @@ class LoginSerializer(StrictSerializer):
         return User.objects.normalize_email(value)
 
 
+class VerifierSerializer(StrictSerializer):
+    """``EmailVerificationRequest``. The bearer is only hashed: never trimmed, echoed, stored or logged."""
+
+    verifier = StrictCharField(trim_whitespace=False, write_only=True)
+
+
+class PrimaryEmailChangeSerializer(StrictSerializer):
+    """``PrimaryEmailChangeRequest``. The new address is normalized like every account email."""
+
+    new_email = StrictEmailField(max_length=254)
+
+    def validate_new_email(self, value):
+        return User.objects.normalize_email(value)
+
+
 def user_response(user: User) -> dict:
     """``UserResponse``."""
     return {
@@ -54,7 +69,8 @@ def user_response(user: User) -> dict:
     }
 
 
-_DELIVERY_PURPOSES = {"email-verification": "email_verification"}
+# A primary-email change sends a verification email to the new address: the contract's purpose for both.
+_DELIVERY_PURPOSES = {"email-verification": "email_verification", "primary-email-change": "email_verification"}
 _DELIVERY_STATUSES = {
     EmailDelivery.Status.PENDING: "pending",
     EmailDelivery.Status.ACCEPTED: "provider_accepted",

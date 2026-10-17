@@ -15,4 +15,8 @@ urlpatterns: list[URLPattern | URLResolver] = [
     path("auth/login", accounts.LoginView.as_view(), name="auth-login"),
     path("auth/logout", accounts.LogoutView.as_view(), name="auth-logout"),
     path("auth/me", accounts.CurrentUserView.as_view(), name="auth-me"),
+    path("auth/email/verify", accounts.VerifyEmailView.as_view(), name="auth-email-verify"),
+    path("auth/email/resend-verification", accounts.ResendEmailVerificationView.as_view(), name="auth-email-resend"),
+    path("auth/email/change", accounts.RequestPrimaryEmailChangeView.as_view(), name="auth-email-change"),
+    path("auth/email/change/verify", accounts.VerifyPrimaryEmailChangeView.as_view(), name="auth-email-change-verify"),
 ]

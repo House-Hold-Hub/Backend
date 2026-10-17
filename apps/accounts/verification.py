@@ -1,8 +1,11 @@
-"""Issuing initial email-verification bearers and their email (ADR-016, ADR-015).
+"""Initial email verification: issuing bearers and their email, and consuming them (ADR-011, ADR-015, ADR-016).
 
-Only issuance lives here (signup needs it); verifying and resending are Backend#35. The plaintext bearer
-exists only in memory and in the email's URI fragment: the database keeps its SHA-256 digest, and the
-delivery record keeps no recipient, link or body.
+Signup and ``resendEmailVerification`` issue; ``verifyEmail`` consumes. The plaintext bearer exists only in
+memory, in the email's URI fragment and in the ``verifyEmail`` request body: the database keeps its SHA-256
+digest, and the delivery record keeps no recipient, link or body. Consuming a bearer verifies the account's
+email and nothing else: it never creates or authenticates a session (the view may only rotate the matching
+restricted session of the same browser). The primary-email change of a verified account is a separate
+lifecycle with its own bearers (``email_change.py``).
 """
 
 from __future__ import annotations
@@ -12,9 +15,13 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 
+from allauth.account.models import EmailAddress
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
+from rest_framework import serializers
 
+from apps.api.errors import Conflict
 from apps.email_delivery.adapter import EmailMessage
 from apps.email_delivery.models import EmailDelivery
 from apps.email_delivery.service import queue_email
@@ -27,8 +34,19 @@ BEARER_BYTES = 32  # 256 bits from the operating system's CSPRNG
 
 
 def bearer_digest(bearer: str) -> str:
-    """The stored form of a bearer; Backend#35 looks bearers up by this digest."""
+    """The stored form of a bearer; bearers are looked up by this digest only."""
     return hashlib.sha256(bearer.encode("utf-8")).hexdigest()
+
+
+class InvalidVerifier(serializers.ValidationError):
+    """400 for every unusable bearer: unknown, expired, consumed, superseded or for another address (ADR-016)."""
+
+    def __init__(self):
+        super().__init__({"verifier": ["The verifier is invalid or has expired."]})
+
+
+class EmailAlreadyVerified(Conflict):
+    default_detail = "The email address is already verified."
 
 
 @dataclass(frozen=True)
@@ -55,6 +73,15 @@ def _message(to: str, link: str) -> EmailMessage:
     )
 
 
+def lock_account(user_id) -> User | None:
+    """Lock the user row (``FOR NO KEY UPDATE``) for the rest of the transaction, as the session registry does.
+
+    Every issuance and consumption of an account's bearers takes this lock first, so they serialize per
+    account and always lock in the same order (account, then bearer).
+    """
+    return User.objects.select_for_update(no_key=True).filter(pk=user_id).first()
+
+
 def issue_email_verification(request, user: User) -> IssuedVerification:
     """Supersede the account's usable bearer, store a new one and queue its email after the commit.
 
@@ -63,7 +90,7 @@ def issue_email_verification(request, user: User) -> IssuedVerification:
     """
     now = timezone.now()
     # Serialize issuance per account so the one-usable-bearer rule cannot race.
-    User.objects.select_for_update(no_key=True).filter(pk=user.pk).first()
+    lock_account(user.pk)
     EmailVerificationBearer.objects.filter(user=user, superseded_at__isnull=True, consumed_at__isnull=True).update(
         superseded_at=now
     )
@@ -81,3 +108,32 @@ def issue_email_verification(request, user: User) -> IssuedVerification:
         subject_id=record.pk,
     )
     return IssuedVerification(bearer=record, delivery=delivery)
+
+
+def verify_initial_email(bearer: str) -> User:
+    """Consume an initial-verification bearer and mark the account's email verified, atomically.
+
+    Raises ``InvalidVerifier`` for any unusable bearer (and for a disabled account) and
+    ``EmailAlreadyVerified`` when the account's email is verified already; either way nothing changes.
+    Concurrent requests with one bearer serialize on the account and bearer locks, so exactly one
+    consumes it and the others see it consumed.
+    """
+    digest = bearer_digest(bearer)
+    user_id = EmailVerificationBearer.objects.filter(digest=digest).values_list("user_id", flat=True).first()
+    if user_id is None:
+        raise InvalidVerifier()
+    with transaction.atomic():
+        user = lock_account(user_id)
+        record = EmailVerificationBearer.objects.select_for_update().filter(digest=digest, user_id=user_id).first()
+        now = timezone.now()
+        if user is None or not user.is_active or record is None or not record.is_usable(now) or record.email != user.email:
+            raise InvalidVerifier()
+        if user.is_email_verified:
+            raise EmailAlreadyVerified()
+        record.consumed_at = now
+        record.save(update_fields=["consumed_at"])
+        # The canonical verified-email record is allauth's (ADR-011): exactly one primary, verified row
+        # for the account's current address.
+        EmailAddress.objects.filter(user=user).exclude(email=user.email).update(primary=False)
+        EmailAddress.objects.update_or_create(user=user, email=user.email, defaults={"verified": True, "primary": True})
+    return user
