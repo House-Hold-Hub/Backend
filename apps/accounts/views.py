@@ -275,7 +275,9 @@ class RequestPasswordResetView(AuthView):
     and passwordless (Google-only) accounts get the same response as an eligible one and no email. The
     delivery of an eligible account is submitted after the response (a provider failure or delay is
     invisible here and recorded on the delivery), and the response never comes sooner than
-    ``AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS``.
+    ``AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS``. Every valid request, eligible or not, takes one background slot
+    for the same fixed time (``DeferredSubmissions(uniform=True)``), so slot contention between callers cannot
+    reveal which addresses have accounts.
     """
 
     permission_classes = [AllowAny]
@@ -288,7 +290,7 @@ class RequestPasswordResetView(AuthView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"]
         limiter.consume("password_reset_email", email=email)
-        deferred = DeferredSubmissions()
+        deferred = DeferredSubmissions(uniform=True)
         request_password_reset(request, email, deferred)
         pad_response(started)
         return DeferredWorkResponse(

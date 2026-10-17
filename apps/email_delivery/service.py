@@ -11,6 +11,7 @@ domain flow, and ``reconcile_stale_deliveries`` settles records an interrupted p
 import datetime
 import logging
 import threading
+import time
 from functools import partial
 from typing import Any
 
@@ -46,17 +47,22 @@ class DeferredSubmissions:
     ``run_in_background``. The sequence is still commit -> bounded provider call -> durable status (ADR-015);
     only the request no longer waits for it, and neither does its web worker.
 
-    The call runs on a short-lived, non-daemon thread with its own database connection, which is closed when
-    the thread ends. Concurrency is bounded per process by ``EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]``,
-    and there is no queue: when every slot is busy the submission is *not* made and its delivery is settled
-    as ``failed`` / ``not_submitted`` at once (nothing was sent), which the caller cannot observe, so overload
-    can neither exhaust threads or connections nor reveal which addresses have accounts. Recovery is a new
-    request. Non-daemon threads are joined by the interpreter at exit, so a graceful worker shutdown waits at
-    most one provider timeout; a process killed mid-call leaves ``submitting``, which the reconciler settles as
-    ``unknown`` / ``interrupted`` (the provider may have accepted), or ``pending`` -> ``not_submitted``.
+    The call runs on a short-lived, non-daemon thread with its own database connection, which is closed as soon
+    as the submission is done. Concurrency is bounded per process by ``EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]``
+    and there is no queue: when every slot is busy the submission is dropped and its delivery stays ``pending``
+    (nothing was sent; ``reconcile_stale_deliveries`` settles it as ``failed`` / ``not_submitted``).
+
+    ``uniform=True`` makes the slot itself existence-independent: the caller admits *every* valid request,
+    including those with nothing to submit (unknown, disabled or passwordless addresses), and each admitted
+    request holds its slot for exactly ``EMAIL_DELIVERY["BACKGROUND_SLOT_SECONDS"]`` (longer than the provider
+    timeout, so a submission always fits) however fast or slow the provider was. Slot occupancy and the
+    admission decision then depend only on how many valid requests are in flight, never on which addresses have
+    accounts, so one caller cannot learn about another address from whether its own email was submitted. The
+    refused path does no database work for either kind of request.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, uniform: bool = False) -> None:
+        self._uniform = uniform
         self._pending: list[tuple[Any, EmailMessage]] = []
 
     def add(self, delivery_id, message: EmailMessage) -> None:
@@ -70,41 +76,47 @@ class DeferredSubmissions:
     def run_in_background(self) -> None:
         """Submit on a bounded background thread; returns at once and never raises."""
         pending, self._pending = self._pending, []
-        if not pending:
+        if not pending and not self._uniform:
             return
-        limit = delivery_settings()["MAX_BACKGROUND_SUBMISSIONS"]
-        thread = threading.Thread(target=self._run_and_close, args=(pending,), name="deferred-email-submission")
+        config = delivery_settings()
+        hold = config["BACKGROUND_SLOT_SECONDS"] if self._uniform else 0.0
+        thread = threading.Thread(target=_run_and_close, args=(pending, hold), name="deferred-email-submission")
         with _background_lock:
-            if len(_background_threads) >= limit:
-                started = False
-            else:
+            admitted = len(_background_threads) < config["MAX_BACKGROUND_SUBMISSIONS"]
+            if admitted:
                 _background_threads.append(thread)
-                started = True
-        if started:
+        if admitted:
             try:
                 thread.start()
             except Exception:  # e.g. the process cannot start another thread
                 with _background_lock:
                     _background_threads.remove(thread)
-                started = False
-        if not started:
-            _settle_not_submitted([delivery_id for delivery_id, _ in pending])
+                admitted = False
+        if not admitted:
+            # Identical for every kind of request; the deliveries (if any) stay pending for the reconciler.
+            logger.warning("deferred email submission dropped: no free background slot")
 
-    @staticmethod
-    def _run_and_close(pending: list[tuple[Any, EmailMessage]]) -> None:
+
+_background_lock = threading.Lock()
+_background_threads: list[threading.Thread] = []
+
+
+def _run_and_close(pending: list[tuple[Any, EmailMessage]], hold: float) -> None:
+    started = time.monotonic()
+    try:
         try:
             _submit_all(pending)
         except BaseException:
             # Interrupted mid-call: _submit already recorded unknown / interrupted. The thread ends either way.
             logger.warning("deferred email submission interrupted")
         finally:
-            connection.close()
-            with _background_lock:
-                _background_threads.remove(threading.current_thread())
-
-
-_background_lock = threading.Lock()
-_background_threads: list[threading.Thread] = []
+            connection.close()  # as soon as the work is done, not after the hold
+        remaining = started + hold - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+    finally:
+        with _background_lock:
+            _background_threads.remove(threading.current_thread())
 
 
 def join_background_submissions(timeout: float = 10.0) -> None:
@@ -122,17 +134,6 @@ def _submit_all(pending: list[tuple[Any, EmailMessage]]) -> None:
         except Exception:
             # _submit only raises for what it cannot classify; never log it (it could echo a recipient or link).
             logger.error("email delivery %s: submission failed unexpectedly", delivery_id)
-
-
-def _settle_not_submitted(delivery_ids) -> None:
-    """Record that these deliveries were never submitted (no free slot); the best effort of a closing response."""
-    try:
-        EmailDelivery.objects.filter(pk__in=delivery_ids, status=Status.PENDING).update(
-            status=Status.FAILED, error_class="not_submitted", completed_at=timezone.now()
-        )
-    except DatabaseError:
-        pass  # stays pending; reconcile_stale_deliveries settles it the same way
-    logger.warning("email deliveries not submitted: no free background slot")
 
 
 def queue_email(

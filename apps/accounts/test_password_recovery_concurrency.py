@@ -33,8 +33,11 @@ def provider(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def no_response_floor(settings):
+def fast_settings(settings):
     settings.AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS = 0
+    settings.EMAIL_DELIVERY = {**settings.EMAIL_DELIVERY, "TIMEOUT_SECONDS": 0.1, "BACKGROUND_SLOT_SECONDS": 0.15}
+    yield
+    service.join_background_submissions()
 
 
 def race(calls):
@@ -80,6 +83,7 @@ def test_concurrent_resets_with_one_bearer_succeed_exactly_once(make_user):
 def test_concurrent_requests_leave_exactly_one_usable_bearer(make_user, provider, settings):
     account(make_user)
     settings.AUTH_RATE_LIMITS = {**settings.AUTH_RATE_LIMITS, "password_reset_email": (("email", 100, 3600),)}
+    settings.EMAIL_DELIVERY = {**settings.EMAIL_DELIVERY, "MAX_BACKGROUND_SUBMISSIONS": 10}  # all five are admitted
     browsers = [prepared() for _ in range(5)]
 
     statuses = race([lambda b=b: forgot(b).status_code for b in browsers])

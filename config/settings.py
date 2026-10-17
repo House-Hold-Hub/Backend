@@ -185,6 +185,9 @@ EMAIL_DELIVERY = {
     # Most post-response submissions (enumeration-safe password reset) one process runs at once, each on a thread
     # with its own database connection; beyond that the submission is skipped and recorded as not submitted.
     "MAX_BACKGROUND_SUBMISSIONS": 4,
+    # How long each such request holds its slot, whether or not it had anything to submit, so that slot
+    # contention cannot reveal which addresses have accounts. Must exceed TIMEOUT_SECONDS.
+    "BACKGROUND_SLOT_SECONDS": 6.0,
 }
 
 LANGUAGE_CODE = "en-us"
