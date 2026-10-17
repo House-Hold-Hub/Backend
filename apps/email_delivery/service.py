@@ -10,6 +10,7 @@ domain flow, and ``reconcile_stale_deliveries`` settles records an interrupted p
 
 import datetime
 import logging
+from collections.abc import Callable
 from functools import partial
 
 from django.db import DatabaseError, connection, transaction
@@ -35,20 +36,50 @@ class EmailDeliveryError(Exception):
     """The email cannot be queued safely (programming error, e.g. outside a transaction)."""
 
 
+class DeferredSubmissions:
+    """Post-commit submissions that run after the HTTP response was handed to the server.
+
+    For an operation whose response time must not reveal whether a provider call happened (an
+    enumeration-safe password-reset request): ``queue_email(..., defer=...)`` hands the committed delivery
+    here instead of calling the provider inside the request, and the response's ``close()`` calls ``run``.
+    The sequence is still commit -> bounded provider call -> durable status (ADR-015); only the request no
+    longer waits for it. If the process dies before ``run``, the record stays ``pending`` and the reconciler
+    settles it as ``not_submitted``.
+    """
+
+    def __init__(self) -> None:
+        self._pending: list[Callable[[], None]] = []
+
+    def add(self, submission: Callable[[], None]) -> None:
+        self._pending.append(submission)
+
+    def run(self) -> None:
+        """Run each submission once; idempotent. ``_submit`` never raises for a provider problem."""
+        while self._pending:
+            self._pending.pop(0)()
+
+
 def queue_email(
-    message: EmailMessage, *, template: str, subject_type: str = "", subject_id=None
+    message: EmailMessage,
+    *,
+    template: str,
+    subject_type: str = "",
+    subject_id=None,
+    defer: DeferredSubmissions | None = None,
 ) -> EmailDelivery:
     """Record a delivery in the current domain transaction and submit it only after that commit.
 
     ``template``, ``subject_type`` and ``subject_id`` are non-secret identifiers (for example
     ``"email-verification"``, ``"invitation"`` and the invitation's UUID). The message is held in memory
-    for the post-commit call only.
+    for the post-commit call only. With ``defer`` the committed submission waits in it until the caller
+    runs it after the response (``DeferredSubmissions``).
     """
     if not connection.in_atomic_block:
         raise EmailDeliveryError("queue_email must run inside the domain transaction (transaction.atomic()).")
     delivery = EmailDelivery.objects.create(template=template, subject_type=subject_type, subject_id=subject_id)
+    submission = partial(_submit, delivery.pk, message)
     # robust=True: even an unforeseen error here must not skip other on_commit callbacks.
-    transaction.on_commit(partial(_submit, delivery.pk, message), robust=True)
+    transaction.on_commit(submission if defer is None else partial(defer.add, submission), robust=True)
     return delivery
 
 

@@ -262,3 +262,31 @@ def test_reconcile_command_reports_counts(db, capsys):
 )
 def test_recoverable_statuses(status, recoverable):
     assert EmailDelivery(template="x", status=status).is_recoverable is recoverable
+
+
+def test_deferred_submission_waits_for_the_commit_and_for_run(message, use_provider, django_capture_on_commit_callbacks):
+    provider = use_provider()
+    deferred = service.DeferredSubmissions()
+    with django_capture_on_commit_callbacks(execute=True):
+        with transaction.atomic():
+            delivery = queue_email(message, template="password-reset", defer=deferred)
+            deferred.run()  # nothing is queued before the commit
+    assert provider.sent == []
+    assert EmailDelivery.objects.get(pk=delivery.pk).status == Status.PENDING
+
+    deferred.run()
+    deferred.run()  # idempotent
+    assert provider.sent == [message]
+    assert EmailDelivery.objects.get(pk=delivery.pk).status == Status.ACCEPTED
+
+
+def test_deferred_submission_of_a_rolled_back_transaction_sends_nothing(message, use_provider, django_capture_on_commit_callbacks):
+    provider = use_provider()
+    deferred = service.DeferredSubmissions()
+    with django_capture_on_commit_callbacks(execute=True):
+        with pytest.raises(RuntimeError):
+            with transaction.atomic():
+                queue_email(message, template="password-reset", defer=deferred)
+                raise RuntimeError
+    deferred.run()
+    assert provider.sent == [] and not EmailDelivery.objects.exists()

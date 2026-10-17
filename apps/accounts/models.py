@@ -237,3 +237,39 @@ class PrimaryEmailChange(models.Model):
 
     def is_usable(self, now) -> bool:
         return self.superseded_at is None and self.consumed_at is None and self.expires_at > now
+
+
+class PasswordResetBearer(models.Model):
+    """A one-time password-reset bearer (ADR-011, ADR-016 "One-time bearer credentials", Backend#36).
+
+    Kept apart from the verification and email-change bearers, so none of them accepts another's. The bearer
+    travels only in the URI fragment of the reset email and the ``resetPassword`` body; only its SHA-256 digest
+    is stored. At most one bearer per account is usable: issuing a new one supersedes the previous one
+    (rotation), and a successful reset or password change supersedes it too. ``email`` is the address the
+    bearer was mailed to, so it never resets an account whose address has changed since. ``consumed_at`` is set
+    atomically with the new password (``password_recovery.reset_password``).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="+")
+    email = models.EmailField(max_length=254)
+    digest = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(superseded_at__isnull=True, consumed_at__isnull=True),
+                name="accounts_one_usable_password_reset_bearer",
+            ),
+        ]
+
+    def __str__(self):
+        return f"PasswordResetBearer({self.id})"
+
+    def is_usable(self, now) -> bool:
+        return self.superseded_at is None and self.consumed_at is None and self.expires_at > now

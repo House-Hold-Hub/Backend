@@ -139,17 +139,25 @@ AUTH_RATE_LIMITS = {
     "email_change_user": (("user", 5, 60 * 60),),
     "email_change_email": (("email", 3, 60 * 60),),
     "verify_email_change_user": (("user", 10, 5 * 60),),
+    "password_reset_ip": (("ip", 20, 60 * 60),),
+    "password_reset_email": (("email", 3, 60 * 60),),
+    "reset_password_ip": (("ip", 20, 5 * 60),),
 }
 # Proxies Infrastructure puts in front of the service (0: use the peer address, ignore X-Forwarded-For).
 RATE_LIMIT_TRUSTED_PROXY_COUNT = 0
 RATE_LIMIT_IPV6_PREFIX = 64
 
-# ADR-016 one-time bearer lifetimes: initial email verification (signup, resend) and primary-email change.
+# ADR-016 one-time bearer lifetimes: initial email verification (signup, resend), primary-email change and password reset.
 AUTH_EMAIL_VERIFICATION_LIFETIME_SECONDS = 24 * 60 * 60
 AUTH_PRIMARY_EMAIL_CHANGE_LIFETIME_SECONDS = 60 * 60
+AUTH_PASSWORD_RESET_LIFETIME_SECONDS = 60 * 60
+# requestPasswordReset answers no sooner than this after it started, whether or not the account exists, so the
+# database work only an existing account does is not observable (the provider call runs after the response).
+AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS = 0.5
 # Frontend routes that read those bearers from the URI fragment (same origin as the API).
 FRONTEND_EMAIL_VERIFICATION_PATH = "/verify-email"
 FRONTEND_PRIMARY_EMAIL_CHANGE_PATH = "/verify-email-change"
+FRONTEND_PASSWORD_RESET_PATH = "/reset-password"
 
 # ADR-011: database-backed sessions, 14-day expiry, HttpOnly session cookie,
 # readable CSRF cookie (sent back as X-CSRFToken), SameSite=Lax for OAuth redirects.
