@@ -20,7 +20,8 @@ Security properties (ADR-011, ADR-013, ADR-015, ADR-016):
   delivery is recovered by a rate-limited resend.
 - The primary-email change requires a verified account and a recent authentication in the current session
   (ADR-016: 5 minutes) for both the request and the verification, and the verification must happen in the
-  session that requested the change. Completing it rotates that session and revokes all others.
+  session that requested the change. Completing it rotates that session, revokes all others and notifies
+  the previous address after the commit.
 - Every response of these operations is ``Cache-Control: private, no-store``.
 """
 
@@ -50,7 +51,7 @@ from .serializers import (
     delivery_summary,
     user_response,
 )
-from .sessions import PRIMARY_EMAIL_CHANGE_SESSION_KEY, establish_session, recently_authenticated, rotate_session
+from .sessions import establish_session, recently_authenticated, rotate_session
 from .verification import EmailAlreadyVerified, issue_email_verification, verify_initial_email
 
 PASSWORD_BACKEND = "django.contrib.auth.backends.ModelBackend"
@@ -221,8 +222,6 @@ class RequestPrimaryEmailChangeView(AuthView):
         limiter.consume("email_change_email", email=new_email)
         with transaction.atomic():
             requested = request_primary_email_change(request, request.user, new_email)
-        # Binds the pending change to this session; the identifier is not a credential.
-        request.session[PRIMARY_EMAIL_CHANGE_SESSION_KEY] = str(requested.change.pk)
         delivery = EmailDelivery.objects.get(pk=requested.delivery.pk)
         return Response({"delivery": delivery_summary(delivery)}, status=status.HTTP_202_ACCEPTED)
 

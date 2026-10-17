@@ -54,15 +54,13 @@ from django.contrib.sessions.backends.db import SessionStore as DatabaseSessionS
 from django.core.exceptions import ValidationError
 from django.db import router, transaction
 from django.middleware.csrf import rotate_token
+from django.utils.crypto import salted_hmac
 
 if TYPE_CHECKING:
     from .models import Session
 
 INVITATION_INTENT_SESSION_KEY = "householdhub_invitation_intent"
-# The identifier (never the bearer) of the primary-email change this session requested: completing a
-# change requires the same session (``verifyPrimaryEmailChange``). Deliberately not preserved by rotation,
-# so a new login, a password change or the completed change itself leaves nothing to complete.
-PRIMARY_EMAIL_CHANGE_SESSION_KEY = "householdhub_primary_email_change"
+SESSION_BINDING_SALT = "householdhub.accounts.session-binding"
 
 # The only session state that survives ``rotate_session`` (security model: "Only explicitly approved,
 # non-secret state may survive rotation"). Django's authentication keys and expiry override keep the
@@ -287,6 +285,21 @@ def recently_authenticated(request) -> bool:
     if isinstance(at, bool) or not isinstance(at, (int, float)):
         return False
     return time.time() - at < app_settings.REAUTHENTICATION_TIMEOUT
+
+
+def session_binding(request) -> str | None:
+    """A keyed digest identifying the request's current session, or ``None`` when it has no key yet.
+
+    Binds a database record to the session that created it (the pending primary-email change) without
+    writing the session or persisting its key: HMAC-SHA256 under ``SECRET_KEY`` cannot be turned back into
+    the key, and it changes whenever the key rotates (login, identity-security boundaries), so a binding
+    never carries over into another session. Being derived rather than stored, it needs no session write and
+    cannot be overwritten by a concurrent request of the same session.
+    """
+    key = getattr(getattr(request, "session", None), "session_key", None)
+    if not key:
+        return None
+    return salted_hmac(SESSION_BINDING_SALT, key, algorithm="sha256").hexdigest()
 
 
 # ---- invitation intent (ADR-013) -------------------------------------------------------------------

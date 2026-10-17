@@ -146,7 +146,9 @@ Signup and resend issue the verification bearer through `verification.issue_emai
 transaction; `verifyEmail` consumes it by `bearer_digest`. The primary-email change (`email_change.py`) has its own
 `PrimaryEmailChange` bearers, requires `sessions.recently_authenticated` (never allauth's
 `did_recently_authenticate`, which waives the check for passwordless accounts) and the requesting session
-(`PRIMARY_EMAIL_CHANGE_SESSION_KEY`), and completes with allauth `email_changed` inside its transaction. Bearer
+(`sessions.session_binding`, a keyed digest stored on the row: never write request-scoped bindings into the session,
+whose last concurrent save wins), and completes with allauth `email_changed` and a post-commit notice to the
+previous address inside its transaction. Bearer
 issuance and consumption lock the account row first (`verification.lock_account`), then the bearer row. Request
 serializers derive from `api.serializers.StrictSerializer` (unknown fields, non-strings and unpaired surrogates are 400).
 

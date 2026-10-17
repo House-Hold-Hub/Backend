@@ -223,11 +223,14 @@ one (unknown, expired, consumed, superseded) gets the same response.
 - **`requestPrimaryEmailChange`** and **`verifyPrimaryEmailChange`** (verified accounts only) both need an
   authentication in the current session within `ACCOUNT_REAUTHENTICATION_TIMEOUT` (ADR-016: 5 minutes; no exemption
   for passwordless accounts), else 403. The request stores a `PrimaryEmailChange` (1 h), supersedes any earlier one,
-  emails the new address (`FRONTEND_PRIMARY_EMAIL_CHANGE_PATH`) and binds the change to the session; the current
-  address stays in effect and the new one is not reserved. A current or used address is 409. The verification must
-  come from the same session; in one transaction it consumes the bearer, makes the new address the only, verified
-  primary `EmailAddress`, rotates the current session and revokes all others (allauth `email_changed`). Anything
-  else, including an address taken meanwhile, is 409 and changes nothing.
+  emails the new address (`FRONTEND_PRIMARY_EMAIL_CHANGE_PATH`) and binds the change to the session through
+  `session_binding`, an HMAC of the session key under `SECRET_KEY` stored on the row (never the key, and no
+  session write, so overlapping requests of one session cannot leave a stale binding). The current address stays
+  in effect and the new one is not reserved. A current or used address is 409. The verification must come from
+  the same session; in one transaction it consumes the bearer, makes the new address the only, verified primary
+  `EmailAddress`, rotates the current session, revokes all others (allauth `email_changed`) and queues a security
+  notice to the previous address (no link or new address), submitted only after the commit. Anything else,
+  including an address taken meanwhile, is 409 and changes nothing, notice included.
 
 Rate limits (ADR-016) are `verify_email_ip`, `resend_email_verification_user`, `email_change_user`,
 `email_change_email` and `verify_email_change_user` in `AUTH_RATE_LIMITS`.

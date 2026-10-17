@@ -204,7 +204,10 @@ class PrimaryEmailChange(models.Model):
     Kept apart from ``EmailVerificationBearer``: a change bearer is never accepted by ``verifyEmail`` and an
     initial-verification bearer never completes a change. The bearer is sent only in the URI fragment of
     an email to ``new_email``; only its SHA-256 digest is stored. At most one change per account is usable:
-    a new request supersedes the previous one. The account's current email stays in effect until
+    a new request supersedes the previous one. ``session_binding`` is the keyed digest of the requesting
+    session (``sessions.session_binding``, never the session key): only that session can complete the
+    change, and since it is written with the row under the account lock it always describes the current
+    change, whatever order concurrent requests answer in. The account's current email stays in effect until
     ``verifyPrimaryEmailChange`` consumes the row, in the same transaction that makes ``new_email`` the
     verified primary address, rotates the current session and revokes the others. The pending address is
     not an allauth ``EmailAddress`` until then, so requesting a change never reserves an address.
@@ -214,6 +217,7 @@ class PrimaryEmailChange(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="+")
     new_email = models.EmailField(max_length=254)
     digest = models.CharField(max_length=64, unique=True)
+    session_binding = models.CharField(max_length=64)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     superseded_at = models.DateTimeField(null=True, blank=True)

@@ -18,10 +18,11 @@ from django.contrib.auth import SESSION_KEY, get_user_model
 from django.db import DatabaseError, connection
 from django.test import override_settings
 from django.utils import timezone
+from django.utils.crypto import salted_hmac
 
 from apps.accounts import views
 from apps.accounts.models import EmailVerificationBearer, PrimaryEmailChange, Session
-from apps.accounts.sessions import PRIMARY_EMAIL_CHANGE_SESSION_KEY, get_invitation_intent, set_invitation_intent
+from apps.accounts.sessions import SESSION_BINDING_SALT, get_invitation_intent, set_invitation_intent
 from apps.accounts.test_auth_api import NO_STORE, Browser, account, assert_throttled, put_intent
 from apps.accounts.verification import bearer_digest
 from apps.email_delivery import service
@@ -100,6 +101,10 @@ def committed(capture, call):
     with capture(execute=True):
         response = call()
     return response
+
+
+def binding_of(browser):
+    return salted_hmac(SESSION_BINDING_SALT, browser.session_key, algorithm="sha256").hexdigest()
 
 
 def protected_status(browser):
@@ -458,7 +463,9 @@ def test_request_change_creates_a_pending_change_bound_to_this_session(make_user
     change = PrimaryEmailChange.objects.get()
     assert (change.user_id, change.new_email) == (user.pk, "new.address@example.com")
     assert (change.expires_at - change.created_at).total_seconds() == pytest.approx(3600, abs=5)
-    assert browser.session()[PRIMARY_EMAIL_CHANGE_SESSION_KEY] == str(change.pk)
+    # Bound to this session by a keyed digest: neither the session key nor the change id is stored elsewhere.
+    assert change.session_binding == binding_of(browser) != browser.session_key
+    assert str(change.pk) not in repr(dict(browser.session()))
     delivery = EmailDelivery.objects.get()
     assert (str(delivery.pk), delivery.template, delivery.subject_id) == (body["delivery"]["id"], "primary-email-change", change.pk)
 
@@ -598,11 +605,18 @@ def test_verify_change_switches_the_primary_email_rotates_and_revokes(make_user,
     bearer = start_change(laptop, provider, django_capture_on_commit_callbacks)
     old_key, other_keys = laptop.session_key, {phone.session_key, tablet.session_key}
 
-    response = verify_change(laptop, bearer)
+    response = committed(django_capture_on_commit_callbacks, lambda: verify_change(laptop, bearer))
     assert response.status_code == 204
     assert response.content == b""
     assert response["Cache-Control"] == NO_STORE
     assert response.cookies["sessionid"].value
+    # The previous address is told after the commit; the notice carries no link, bearer or new address.
+    notice = provider.sent[-1]
+    assert notice.to == "member@example.com"
+    for secret in ("http", bearer, "new.address"):
+        assert secret not in notice.text_body and secret not in notice.subject
+    record = EmailDelivery.objects.get(template="primary-email-changed")
+    assert (record.subject_type, record.subject_id) == ("primary-email-change", PrimaryEmailChange.objects.get().pk)
 
     user.refresh_from_db()
     assert user.email == "new.address@example.com"
@@ -617,7 +631,6 @@ def test_verify_change_switches_the_primary_email_rotates_and_revokes(make_user,
     session = laptop.session()
     assert session[SESSION_KEY] == str(user.pk)
     assert get_invitation_intent(session) == intent
-    assert PRIMARY_EMAIL_CHANGE_SESSION_KEY not in session
     me = laptop.get("me").json()
     assert (me["email"], me["email_verified"]) == ("new.address@example.com", True)
     assert phone.get("me").status_code == 401 and tablet.get("me").status_code == 401
@@ -726,6 +739,87 @@ def test_malformed_authentication_records_never_count_as_recent(make_user, brows
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("state", ["unknown", "other-session", "taken"])
+def test_refused_change_sends_no_security_notice(make_user, browser, provider, django_capture_on_commit_callbacks, state):
+    account(make_user)
+    browser.login("member@example.com")
+    bearer = start_change(browser, provider, django_capture_on_commit_callbacks)
+    caller = browser
+    if state == "unknown":
+        bearer = "never-issued"
+    elif state == "other-session":
+        caller = Browser()
+        caller.login("member@example.com")
+    else:
+        make_user("new.address@example.com")
+    response = committed(django_capture_on_commit_callbacks, lambda: verify_change(caller, bearer))
+    assert response.status_code == 409
+    assert [m.to for m in provider.sent] == ["new.address@example.com"]
+    assert not EmailDelivery.objects.filter(template="primary-email-changed").exists()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("outcome, status", [(ProviderRejected("no"), "failed"), (ProviderTimeout("slow"), "unknown")])
+def test_security_notice_failure_never_undoes_the_change(make_user, provider, outcome, status):
+    account(make_user)
+    browser = Browser()
+    browser.login("member@example.com")
+    assert request_change(browser).status_code == 202
+    bearer = link_of(provider.sent[-1])[1]
+
+    def refuse_old_address(message):
+        if message.to == "member@example.com":
+            raise outcome
+
+    provider.outcome = refuse_old_address
+    assert verify_change(browser, bearer).status_code == 204
+    assert User.objects.get().email == "new.address@example.com"
+    notice = EmailDelivery.objects.get(template="primary-email-changed")
+    assert notice.status == status
+    assert browser.get("me").json()["email"] == "new.address@example.com"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_overlapping_requests_of_one_session_bind_the_change_that_won(make_user, provider):
+    """The earlier request commits first but answers last (slow delivery): the newest change stays completable."""
+    account(make_user)
+    browser = Browser()
+    browser.login("member@example.com")
+    first_committed, release_first = threading.Event(), threading.Event()
+
+    def slow_first_delivery(message):
+        if message.to == "first@example.com":
+            first_committed.set()  # the earlier change is committed; its delivery is in progress
+            assert release_first.wait(10)
+
+    provider.outcome = slow_first_delivery
+    statuses = {}
+
+    def first():
+        try:
+            statuses["first"] = request_change(browser, "first@example.com").status_code
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=first)
+    thread.start()
+    assert first_committed.wait(10)
+    statuses["second"] = request_change(browser, "second@example.com").status_code  # answers first
+    release_first.set()
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+    assert statuses == {"first": 202, "second": 202}
+
+    bearers = {m.to: link_of(m)[1] for m in provider.sent}
+    current = PrimaryEmailChange.objects.get(superseded_at__isnull=True)
+    assert current.new_email == "second@example.com" and current.session_binding == binding_of(browser)
+    provider.outcome = None
+    assert verify_change(browser, bearers["first@example.com"]).json() == NO_COMPATIBLE_CHANGE
+    assert verify_change(browser, bearers["second@example.com"]).status_code == 204
+    assert User.objects.get().email == "second@example.com"
+
+
+@pytest.mark.django_db
 def test_verify_change_requires_a_session_and_csrf(make_user, browser, provider, django_capture_on_commit_callbacks):
     anonymous = Browser()
     anonymous.csrf()
@@ -765,9 +859,13 @@ def test_revocation_failure_rolls_the_whole_change_back(make_user, provider, dja
     laptop.login("member@example.com")
     phone.login("member@example.com")
     bearer = start_change(laptop, provider, django_capture_on_commit_callbacks)
+    sent_before = len(provider.sent)
     with mock.patch("apps.accounts.sessions.revoke_other_sessions", side_effect=DatabaseError("down")):
         with pytest.raises(DatabaseError):
-            verify_change(laptop, bearer)
+            committed(django_capture_on_commit_callbacks, lambda: verify_change(laptop, bearer))
+    # No security notice for a change that did not happen.
+    assert len(provider.sent) == sent_before
+    assert not EmailDelivery.objects.filter(template="primary-email-changed").exists()
     assert User.objects.get().email == "member@example.com"
     assert EmailAddress.objects.get().email == "member@example.com"
     assert PrimaryEmailChange.objects.get().consumed_at is None
