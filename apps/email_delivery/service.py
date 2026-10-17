@@ -10,6 +10,7 @@ domain flow, and ``reconcile_stale_deliveries`` settles records an interrupted p
 
 import datetime
 import logging
+import threading
 from collections.abc import Callable
 from functools import partial
 
@@ -41,10 +42,12 @@ class DeferredSubmissions:
 
     For an operation whose response time must not reveal whether a provider call happened (an
     enumeration-safe password-reset request): ``queue_email(..., defer=...)`` hands the committed delivery
-    here instead of calling the provider inside the request, and the response's ``close()`` calls ``run``.
-    The sequence is still commit -> bounded provider call -> durable status (ADR-015); only the request no
-    longer waits for it. If the process dies before ``run``, the record stays ``pending`` and the reconciler
-    settles it as ``not_submitted``.
+    here instead of calling the provider inside the request, and the response's ``close()`` calls
+    ``run_in_background``. The sequence is still commit -> bounded provider call -> durable status (ADR-015);
+    only the request no longer waits for it, and neither does its web worker: the bounded call runs on a
+    short-lived thread with its own connection, so a slow provider cannot keep a synchronous worker busy
+    (which would be a timing channel, since only eligible accounts submit). If the process dies before the
+    call, the record stays ``pending`` and the reconciler settles it as ``not_submitted``.
     """
 
     def __init__(self) -> None:
@@ -57,6 +60,38 @@ class DeferredSubmissions:
         """Run each submission once; idempotent. ``_submit`` never raises for a provider problem."""
         while self._pending:
             self._pending.pop(0)()
+
+    def run_in_background(self) -> None:
+        """Run the submissions on their own thread and database connection; returns at once."""
+        if not self._pending:
+            return
+        thread = threading.Thread(target=self._run_and_close, name="deferred-email-submission", daemon=True)
+        with _background_lock:
+            _background_threads.append(thread)
+        thread.start()
+
+    def _run_and_close(self) -> None:
+        try:
+            self.run()
+        except Exception:
+            # Never log the exception: it could echo a recipient or link. The record stays for the reconciler.
+            logger.error("deferred email submission failed")
+        finally:
+            connection.close()
+            with _background_lock:
+                _background_threads.remove(threading.current_thread())
+
+
+_background_lock = threading.Lock()
+_background_threads: list[threading.Thread] = []
+
+
+def join_background_submissions(timeout: float = 10.0) -> None:
+    """Wait for submissions started by ``run_in_background`` (graceful shutdown, tests)."""
+    with _background_lock:
+        threads = list(_background_threads)
+    for thread in threads:
+        thread.join(timeout)
 
 
 def queue_email(

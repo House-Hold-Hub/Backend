@@ -7,6 +7,7 @@ The tests commit for real (``transaction=True``): the reset email is submitted a
 
 import datetime
 import logging
+import threading
 import time
 import uuid
 
@@ -65,7 +66,9 @@ def browser():
 
 
 def forgot(browser, email="member@example.com"):
-    return browser.post("forgot-password", {"email": email})
+    response = browser.post("forgot-password", {"email": email})
+    service.join_background_submissions()  # the provider call runs on its own thread after the response
+    return response
 
 
 def reset(browser, bearer, password=NEW_PASSWORD):
@@ -204,6 +207,28 @@ def test_the_provider_is_called_only_after_the_response_is_closed(make_user, bro
     held[0].deferred.run()
     held[0].deferred.run()  # idempotent: never submitted twice
     assert len(provider.sent) == 1
+    assert EmailDelivery.objects.get().status == EmailDelivery.Status.ACCEPTED
+
+
+def test_a_slow_provider_call_does_not_hold_the_request_or_its_worker(make_user, browser, provider):
+    """The bounded call runs on another thread: the closed response returns while the provider is still busy."""
+    account(make_user)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(message):
+        started.set()
+        assert release.wait(10)
+
+    provider.outcome = slow
+    began = time.monotonic()
+    response = browser.post("forgot-password", {"email": "member@example.com"})
+    returned_in = time.monotonic() - began
+    assert response.status_code == 202
+    assert started.wait(10)  # the submission is under way ...
+    assert returned_in < 5  # ... and the request did not wait for it
+    assert EmailDelivery.objects.get().status == EmailDelivery.Status.SUBMITTING
+    release.set()
+    service.join_background_submissions()
     assert EmailDelivery.objects.get().status == EmailDelivery.Status.ACCEPTED
 
 

@@ -23,7 +23,7 @@ Security properties (ADR-011, ADR-013, ADR-015, ADR-016):
   session that requested the change. Completing it rotates that session, revokes all others and notifies
   the previous address after the commit.
 - ``requestPasswordReset`` answers 202 with one fixed body for every valid address, after a minimum duration, and
-  its email (existing accounts only) is submitted to the provider after the response was sent, so neither the
+  its email (existing accounts only) is submitted to the provider after the response was sent, on its own thread, so neither the
   body, the status nor the timing reveals whether an account exists or how the provider answered.
   ``resetPassword`` consumes the one-time bearer and revokes every session; ``changePassword`` verifies the
   current password, rotates the current session and revokes the others (``password_recovery.py``).
@@ -83,7 +83,10 @@ class AuthView(ApiView):
 
 
 class DeferredWorkResponse(Response):
-    """A response whose ``deferred`` work runs when the server closes it, after the body was handed over."""
+    """A response whose ``deferred`` work starts when the server closes it, after the body was handed over.
+
+    The work runs on its own thread, so the web worker is free for the next request at once.
+    """
 
     def __init__(self, *args, deferred: DeferredSubmissions, **kwargs):
         super().__init__(*args, **kwargs)
@@ -91,7 +94,7 @@ class DeferredWorkResponse(Response):
 
     def close(self):
         try:
-            self.deferred.run()
+            self.deferred.run_in_background()
         finally:
             super().close()
 
