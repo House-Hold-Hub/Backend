@@ -22,7 +22,7 @@ Status = EmailDelivery.Status
 def _drained():
     yield
     service.join_background_submissions()
-    assert service._background_threads == []
+    assert service._background_threads == [] and service.slots_in_use() == 0
 
 
 def queue_batch(message, count=1):
@@ -183,3 +183,50 @@ def test_a_uniform_request_is_refused_exactly_like_one_with_a_submission(message
     deferred.run_in_background()
     service.join_background_submissions()
     assert statuses(ids) == [(Status.ACCEPTED, "")]
+
+
+def test_a_reservation_counts_against_the_bound_before_anything_runs(settings):
+    settings.EMAIL_DELIVERY = {**settings.EMAIL_DELIVERY, "MAX_BACKGROUND_SUBMISSIONS": 2}
+    first, second, third = (DeferredSubmissions(uniform=True) for _ in range(3))
+    assert first.reserve() and second.reserve()
+    assert first.reserve()  # idempotent: still one slot
+    assert service.slots_in_use() == 2
+    assert not third.reserve()  # refused before it could change anything
+    first.cancel()
+    assert service.slots_in_use() == 1
+    assert third.reserve()
+    second.cancel()
+    third.cancel()
+    assert service.slots_in_use() == 0
+
+
+def test_a_refusal_stands_even_if_a_slot_frees_up_before_the_response_closes(settings):
+    settings.EMAIL_DELIVERY = {**settings.EMAIL_DELIVERY, "MAX_BACKGROUND_SUBMISSIONS": 1, "TIMEOUT_SECONDS": 0.1, "BACKGROUND_SLOT_SECONDS": 0.2}
+    holder, refused = DeferredSubmissions(uniform=True), DeferredSubmissions(uniform=True)
+    assert holder.reserve()
+    assert not refused.reserve()
+    holder.cancel()
+    refused.run_in_background()  # the slot is free now, but this request was already turned away
+    assert service._background_threads == [] and service.slots_in_use() == 0
+
+
+def test_a_reservation_that_is_never_used_is_given_back_when_collected(settings):
+    import gc
+
+    unused = DeferredSubmissions(uniform=True)
+    assert unused.reserve() and service.slots_in_use() == 1
+    del unused
+    gc.collect()
+    assert service.slots_in_use() == 0
+
+
+def test_a_reservation_is_handed_to_the_thread_and_released_when_it_ends(settings):
+    settings.EMAIL_DELIVERY = {**settings.EMAIL_DELIVERY, "TIMEOUT_SECONDS": 0.1, "BACKGROUND_SLOT_SECONDS": 0.3}
+    deferred = DeferredSubmissions(uniform=True)
+    assert deferred.reserve()
+    deferred.run_in_background()
+    assert service.slots_in_use() == 1  # the thread owns it, not counted twice
+    deferred.cancel()  # no effect once the thread owns the slot
+    assert service.slots_in_use() == 1
+    service.join_background_submissions()
+    assert service.slots_in_use() == 0

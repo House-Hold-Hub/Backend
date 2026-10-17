@@ -275,9 +275,10 @@ class RequestPasswordResetView(AuthView):
     and passwordless (Google-only) accounts get the same response as an eligible one and no email. The
     delivery of an eligible account is submitted after the response (a provider failure or delay is
     invisible here and recorded on the delivery), and the response never comes sooner than
-    ``AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS``. Every valid request, eligible or not, takes one background slot
-    for the same fixed time (``DeferredSubmissions(uniform=True)``), so slot contention between callers cannot
-    reveal which addresses have accounts.
+    ``AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS``. Every valid request, eligible or not, reserves one background slot
+    before touching any account and holds it for the same fixed time (``DeferredSubmissions(uniform=True)``), so
+    slot contention between callers cannot reveal which addresses have accounts, and a request refused for lack
+    of a slot changes nothing (an earlier reset link stays usable).
     """
 
     permission_classes = [AllowAny]
@@ -291,7 +292,15 @@ class RequestPasswordResetView(AuthView):
         email = serializer.validated_data["email"]
         limiter.consume("password_reset_email", email=email)
         deferred = DeferredSubmissions(uniform=True)
-        request_password_reset(request, email, deferred)
+        # Admission comes first and is the same for every address: a refused request changes nothing, so it
+        # cannot supersede a link the account already holds. (Accounts, eligible or not, are only looked at
+        # once a slot is reserved.)
+        if deferred.reserve():
+            try:
+                request_password_reset(request, email, deferred)
+            except BaseException:
+                deferred.cancel()
+                raise
         pad_response(started)
         return DeferredWorkResponse(
             {"message": RESET_REQUESTED_MESSAGE}, status=status.HTTP_202_ACCEPTED, deferred=deferred

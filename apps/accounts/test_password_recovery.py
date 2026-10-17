@@ -262,17 +262,14 @@ def test_overload_cannot_tell_an_existing_account_from_an_unknown_one(make_user,
     ]
     assert {_signature(r) for r in [first, *burst]} == {_signature(first)}
     assert len(provider.calls) == calls_before  # nothing more was submitted while saturated
-    # Dropped without any write: the two real accounts keep a pending delivery, the unknown ones have none.
-    assert EmailDelivery.objects.filter(status=EmailDelivery.Status.PENDING).count() == 2
+    # Refused before any write, whatever the address: only the holder's bearer and delivery exist.
+    assert EmailDelivery.objects.count() == 1 and PasswordResetBearer.objects.count() == 1
     assert len(service._background_threads) == 1  # no thread pile-up
 
     release.set()
     service.join_background_submissions()
     assert EmailDelivery.objects.filter(status=EmailDelivery.Status.ACCEPTED).count() == 1
-    # The reconciler settles the dropped deliveries honestly, and a new request recovers once a slot is free.
-    service.reconcile_stale_deliveries(now=timezone.now() + datetime.timedelta(hours=1))
-    refused = EmailDelivery.objects.filter(status=EmailDelivery.Status.FAILED, error_class="not_submitted")
-    assert refused.count() == 2
+    # Nothing was issued for the refused accounts, and a new request is served once a slot is free.
     assert forgot(Browser(), "a@example.com").status_code == 202
     assert EmailDelivery.objects.filter(status=EmailDelivery.Status.ACCEPTED).count() == 2
 
@@ -337,6 +334,69 @@ def test_every_valid_request_holds_a_slot_for_the_same_time(make_user, provider,
         held[email] = time.monotonic() - began
     assert all(0.78 <= seconds <= 1.1 for seconds in held.values()), held
     assert EmailDelivery.objects.filter(status=EmailDelivery.Status.ACCEPTED).count() == 3
+
+
+def _occupy_the_only_slot(provider):
+    """A slow provider call for another account holds the single background slot; returns (release, join)."""
+    arrived, release = threading.Event(), threading.Event()
+
+    def block(message):
+        if message.to == "busy@example.com":
+            arrived.set()
+            assert release.wait(10)
+
+    provider.outcome = block
+    Browser().post("forgot-password", {"email": "busy@example.com"})
+    assert arrived.wait(10)
+    return release
+
+
+def test_a_request_refused_for_capacity_leaves_a_delivered_reset_link_usable(make_user, provider, settings):
+    """Refusal is decided before any write, so it cannot invalidate a link that was already mailed."""
+    settings.EMAIL_DELIVERY = {**settings.EMAIL_DELIVERY, "MAX_BACKGROUND_SUBMISSIONS": 1}
+    account(make_user, "busy@example.com")
+    user = account(make_user)
+    assert forgot(Browser()).status_code == 202
+    delivered = mailed_bearer(provider)
+    first = PasswordResetBearer.objects.get(user=user)
+
+    release = _occupy_the_only_slot(provider)
+    deliveries = EmailDelivery.objects.count()
+    refused = forgot(Browser())
+    unknown_refused = forgot(Browser(), "unknown@example.com")
+    assert _signature(refused) == _signature(unknown_refused) and refused.status_code == 202
+    # Nothing was issued, superseded or queued for the refused request ...
+    first.refresh_from_db()
+    assert first.superseded_at is None and first.is_usable(timezone.now())
+    assert PasswordResetBearer.objects.filter(user=user).count() == 1
+    assert EmailDelivery.objects.count() == deliveries
+    # ... so the link the user already has still works.
+    release.set()
+    service.join_background_submissions()
+    assert reset(Browser(), delivered).status_code == 204
+
+
+def test_an_admitted_request_still_rotates_the_bearer(make_user, provider):
+    """ADR-016 rotation is unchanged: a request that is admitted supersedes the earlier link."""
+    account(make_user)
+    forgot(Browser())
+    forgot(Browser())
+    first, second = mailed_bearer(provider, 0), mailed_bearer(provider, 1)
+    assert reset(Browser(), first).json() == INVALID_VERIFIER
+    assert reset(Browser(), second).status_code == 204
+
+
+def test_a_failed_request_gives_its_slot_back(make_user, browser, monkeypatch):
+    account(make_user)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("storage failure")
+
+    monkeypatch.setattr(views, "request_password_reset", fail)
+    browser.client.raise_request_exception = False
+    for index in range(service.delivery_settings()["MAX_BACKGROUND_SUBMISSIONS"] + 2):
+        assert forgot(browser, f"user{index}@example.com").status_code == 500
+    assert service.slots_in_use() == 0  # none leaked, so later requests are still admitted
 
 
 def test_a_thread_that_cannot_start_does_not_change_the_response(make_user, browser, provider, monkeypatch):

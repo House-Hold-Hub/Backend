@@ -12,6 +12,7 @@ import datetime
 import logging
 import threading
 import time
+import weakref
 from functools import partial
 from typing import Any
 
@@ -49,21 +50,47 @@ class DeferredSubmissions:
 
     The call runs on a short-lived, non-daemon thread with its own database connection, which is closed as soon
     as the submission is done. Concurrency is bounded per process by ``EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]``
-    and there is no queue: when every slot is busy the submission is dropped and its delivery stays ``pending``
+    and there is no queue: a submission that finds no free slot is dropped and its delivery stays ``pending``
     (nothing was sent; ``reconcile_stale_deliveries`` settles it as ``failed`` / ``not_submitted``).
 
-    ``uniform=True`` makes the slot itself existence-independent: the caller admits *every* valid request,
-    including those with nothing to submit (unknown, disabled or passwordless addresses), and each admitted
+    ``uniform=True`` makes the slot existence-independent: the caller reserves a slot for *every* valid request,
+    including those with nothing to submit (unknown, disabled or passwordless addresses), and each reserved
     request holds its slot for exactly ``EMAIL_DELIVERY["BACKGROUND_SLOT_SECONDS"]`` (longer than the provider
-    timeout, so a submission always fits) however fast or slow the provider was. Slot occupancy and the
-    admission decision then depend only on how many valid requests are in flight, never on which addresses have
-    accounts, so one caller cannot learn about another address from whether its own email was submitted. The
-    refused path does no database work for either kind of request.
+    timeout, so a submission always fits) however fast or slow the provider was. Admission and occupancy then
+    depend only on how many valid requests are in flight, never on which addresses have accounts, so one caller
+    cannot learn about another address from whether its own email was submitted.
+
+    ``reserve()`` takes the slot *before* the caller changes any state. A request that is refused then does
+    nothing at all, so refusing an email never costs the account a credential it already holds (a reset
+    request that supersedes the earlier bearer and is then dropped would). The reservation is consumed by
+    ``run_in_background``, given back by ``cancel()`` when the request fails, and by garbage collection if the
+    response is never closed; without ``reserve()``, ``run_in_background`` reserves for itself.
     """
 
     def __init__(self, *, uniform: bool = False) -> None:
         self._uniform = uniform
         self._pending: list[tuple[Any, EmailMessage]] = []
+        self._finalizer: weakref.finalize | None = None
+        self._attempted = False
+
+    @property
+    def _reserved(self) -> bool:
+        return self._finalizer is not None and self._finalizer.alive
+
+    def reserve(self) -> bool:
+        """Take one background slot now; ``False`` (and nothing reserved) when none is free. Idempotent."""
+        if self._reserved:
+            return True
+        self._attempted = True
+        if not _take_slot():
+            return False
+        self._finalizer = weakref.finalize(self, _release_slot)
+        return True
+
+    def cancel(self) -> None:
+        """Give back a reservation that will not be used; harmless without one."""
+        if self._finalizer is not None:
+            self._finalizer()
 
     def add(self, delivery_id, message: EmailMessage) -> None:
         self._pending.append((delivery_id, message))
@@ -77,28 +104,51 @@ class DeferredSubmissions:
         """Submit on a bounded background thread; returns at once and never raises."""
         pending, self._pending = self._pending, []
         if not pending and not self._uniform:
+            self.cancel()
             return
-        config = delivery_settings()
-        hold = config["BACKGROUND_SLOT_SECONDS"] if self._uniform else 0.0
-        thread = threading.Thread(target=_run_and_close, args=(pending, hold), name="deferred-email-submission")
-        with _background_lock:
-            admitted = len(_background_threads) < config["MAX_BACKGROUND_SUBMISSIONS"]
-            if admitted:
-                _background_threads.append(thread)
-        if admitted:
-            try:
-                thread.start()
-            except Exception:  # e.g. the process cannot start another thread
-                with _background_lock:
-                    _background_threads.remove(thread)
-                admitted = False
-        if not admitted:
+        # A refusal (or a cancel) stands: a slot that frees up later is not taken for a request already turned away.
+        if not self._reserved and (self._attempted or not self.reserve()):
             # Identical for every kind of request; the deliveries (if any) stay pending for the reconciler.
             logger.warning("deferred email submission dropped: no free background slot")
+            return
+        assert self._finalizer is not None
+        self._finalizer.detach()  # the thread owns the slot from here
+        hold = delivery_settings()["BACKGROUND_SLOT_SECONDS"] if self._uniform else 0.0
+        thread = threading.Thread(target=_run_and_close, args=(pending, hold), name="deferred-email-submission")
+        with _background_lock:
+            _background_threads.append(thread)
+        try:
+            thread.start()
+        except Exception:  # e.g. the process cannot start another thread
+            with _background_lock:
+                _background_threads.remove(thread)
+            _release_slot()
+            logger.warning("deferred email submission dropped: could not start a thread")
 
 
 _background_lock = threading.Lock()
 _background_threads: list[threading.Thread] = []
+_slots_taken = 0  # reserved or running; bounded by MAX_BACKGROUND_SUBMISSIONS
+
+
+def _take_slot() -> bool:
+    global _slots_taken
+    with _background_lock:
+        if _slots_taken >= delivery_settings()["MAX_BACKGROUND_SUBMISSIONS"]:
+            return False
+        _slots_taken += 1
+        return True
+
+
+def _release_slot() -> None:
+    global _slots_taken
+    with _background_lock:
+        _slots_taken -= 1
+
+
+def slots_in_use() -> int:
+    with _background_lock:
+        return _slots_taken
 
 
 def _run_and_close(pending: list[tuple[Any, EmailMessage]], hold: float) -> None:
@@ -117,6 +167,7 @@ def _run_and_close(pending: list[tuple[Any, EmailMessage]], hold: float) -> None
     finally:
         with _background_lock:
             _background_threads.remove(threading.current_thread())
+        _release_slot()
 
 
 def join_background_submissions(timeout: float = 10.0) -> None:
