@@ -232,6 +232,58 @@ def test_a_slow_provider_call_does_not_hold_the_request_or_its_worker(make_user,
     assert EmailDelivery.objects.get().status == EmailDelivery.Status.ACCEPTED
 
 
+def _signature(response):
+    return (response.status_code, response.content, response["Content-Type"], response["Cache-Control"], tuple(sorted(response.cookies)))
+
+
+def test_overload_cannot_tell_an_existing_account_from_an_unknown_one(make_user, provider, settings):
+    """Every background slot busy: the burst is answered alike, and only the delivery records differ."""
+    settings.EMAIL_DELIVERY = {**settings.EMAIL_DELIVERY, "MAX_BACKGROUND_SUBMISSIONS": 1}
+    for name in ("busy", "a", "b"):
+        account(make_user, f"{name}@example.com")
+    arrived, release = threading.Event(), threading.Event()
+
+    def block(_message):
+        arrived.set()
+        assert release.wait(10)
+
+    provider.outcome = block
+    first = Browser().post("forgot-password", {"email": "busy@example.com"})
+    assert arrived.wait(10)  # the only slot is now held by a slow provider call
+    calls_before = len(provider.calls)
+
+    burst = [
+        Browser().post("forgot-password", {"email": email})
+        for email in ("a@example.com", "b@example.com", "unknown1@example.com", "unknown2@example.com")
+    ]
+    assert {_signature(r) for r in [first, *burst]} == {_signature(first)}
+    assert len(provider.calls) == calls_before  # nothing more was submitted while saturated
+    refused = EmailDelivery.objects.filter(status=EmailDelivery.Status.FAILED, error_class="not_submitted")
+    assert refused.count() == 2  # recorded for the two real accounts, invisible to their callers
+    assert len(service._background_threads) == 1  # no thread pile-up
+
+    release.set()
+    service.join_background_submissions()
+    assert EmailDelivery.objects.filter(status=EmailDelivery.Status.ACCEPTED).count() == 1
+    # A refused account recovers with a new request once a slot is free.
+    assert forgot(Browser(), "a@example.com").status_code == 202
+    assert EmailDelivery.objects.filter(status=EmailDelivery.Status.ACCEPTED).count() == 2
+
+
+def test_a_thread_that_cannot_start_does_not_change_the_response(make_user, browser, provider, monkeypatch):
+    account(make_user)
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    existing = forgot(browser)
+    unknown = forgot(browser, "unknown@example.com")
+    assert _signature(existing) == _signature(unknown) and existing.status_code == 202
+    assert provider.sent == []
+    assert EmailDelivery.objects.get().error_class == "not_submitted"
+
+
 def test_a_request_that_rolls_back_queues_and_sends_nothing(make_user, browser, provider, monkeypatch):
     account(make_user)
 

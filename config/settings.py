@@ -182,6 +182,9 @@ EMAIL_DELIVERY = {
     "TIMEOUT_SECONDS": 5.0,
     # A pending/submitting record older than this was left by an interrupted process (reconciler).
     "STALE_AFTER_SECONDS": 300,
+    # Most post-response submissions (enumeration-safe password reset) one process runs at once, each on a thread
+    # with its own database connection; beyond that the submission is skipped and recorded as not submitted.
+    "MAX_BACKGROUND_SUBMISSIONS": 4,
 }
 
 LANGUAGE_CODE = "en-us"

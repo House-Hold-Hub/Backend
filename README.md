@@ -247,7 +247,11 @@ supersede an earlier bearer; consumption is atomic with the password change unde
   disabled and passwordless (Google-only) accounts get no bearer and no email. The email of an eligible account (an
   unverified one too: it proves mailbox ownership) is queued with the bearer and submitted after the HTTP response
   was closed, on its own thread and connection (`DeferredSubmissions`, still commit -> bounded provider call ->
-  durable status of ADR-015), so a slow or failing provider neither delays the caller nor keeps a web worker busy, and the response never comes sooner than
+  durable status of ADR-015), so a slow or failing provider neither delays the caller nor keeps a web worker busy,
+  and bounded per process by `EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]` (4): there is no queue, so when every slot
+  is busy the submission is skipped and its delivery recorded `failed` / `not_submitted` (nothing sent, invisible to the
+  caller, recovered by requesting again). The threads are non-daemon: a graceful shutdown waits at most one provider
+  timeout, and a killed process leaves `submitting` / `pending`, which `reconcile_email_deliveries` settles honestly, and the response never comes sooner than
   `AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS` to cover the database work only an existing account does. A failed
   delivery is recovered by requesting again. Limits: `password_reset_ip` (20/h) and `password_reset_email` (3/h, counted
   for unknown addresses too, same `429`).

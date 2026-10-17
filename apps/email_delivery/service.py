@@ -11,8 +11,8 @@ domain flow, and ``reconcile_stale_deliveries`` settles records an interrupted p
 import datetime
 import logging
 import threading
-from collections.abc import Callable
 from functools import partial
+from typing import Any
 
 from django.db import DatabaseError, connection, transaction
 from django.db.models import Q
@@ -44,38 +44,59 @@ class DeferredSubmissions:
     enumeration-safe password-reset request): ``queue_email(..., defer=...)`` hands the committed delivery
     here instead of calling the provider inside the request, and the response's ``close()`` calls
     ``run_in_background``. The sequence is still commit -> bounded provider call -> durable status (ADR-015);
-    only the request no longer waits for it, and neither does its web worker: the bounded call runs on a
-    short-lived thread with its own connection, so a slow provider cannot keep a synchronous worker busy
-    (which would be a timing channel, since only eligible accounts submit). If the process dies before the
-    call, the record stays ``pending`` and the reconciler settles it as ``not_submitted``.
+    only the request no longer waits for it, and neither does its web worker.
+
+    The call runs on a short-lived, non-daemon thread with its own database connection, which is closed when
+    the thread ends. Concurrency is bounded per process by ``EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]``,
+    and there is no queue: when every slot is busy the submission is *not* made and its delivery is settled
+    as ``failed`` / ``not_submitted`` at once (nothing was sent), which the caller cannot observe, so overload
+    can neither exhaust threads or connections nor reveal which addresses have accounts. Recovery is a new
+    request. Non-daemon threads are joined by the interpreter at exit, so a graceful worker shutdown waits at
+    most one provider timeout; a process killed mid-call leaves ``submitting``, which the reconciler settles as
+    ``unknown`` / ``interrupted`` (the provider may have accepted), or ``pending`` -> ``not_submitted``.
     """
 
     def __init__(self) -> None:
-        self._pending: list[Callable[[], None]] = []
+        self._pending: list[tuple[Any, EmailMessage]] = []
 
-    def add(self, submission: Callable[[], None]) -> None:
-        self._pending.append(submission)
+    def add(self, delivery_id, message: EmailMessage) -> None:
+        self._pending.append((delivery_id, message))
 
     def run(self) -> None:
-        """Run each submission once; idempotent. ``_submit`` never raises for a provider problem."""
-        while self._pending:
-            self._pending.pop(0)()
+        """Submit each delivery once, on the calling thread; idempotent. A failure of one never skips another."""
+        pending, self._pending = self._pending, []
+        _submit_all(pending)
 
     def run_in_background(self) -> None:
-        """Run the submissions on their own thread and database connection; returns at once."""
-        if not self._pending:
+        """Submit on a bounded background thread; returns at once and never raises."""
+        pending, self._pending = self._pending, []
+        if not pending:
             return
-        thread = threading.Thread(target=self._run_and_close, name="deferred-email-submission", daemon=True)
+        limit = delivery_settings()["MAX_BACKGROUND_SUBMISSIONS"]
+        thread = threading.Thread(target=self._run_and_close, args=(pending,), name="deferred-email-submission")
         with _background_lock:
-            _background_threads.append(thread)
-        thread.start()
+            if len(_background_threads) >= limit:
+                started = False
+            else:
+                _background_threads.append(thread)
+                started = True
+        if started:
+            try:
+                thread.start()
+            except Exception:  # e.g. the process cannot start another thread
+                with _background_lock:
+                    _background_threads.remove(thread)
+                started = False
+        if not started:
+            _settle_not_submitted([delivery_id for delivery_id, _ in pending])
 
-    def _run_and_close(self) -> None:
+    @staticmethod
+    def _run_and_close(pending: list[tuple[Any, EmailMessage]]) -> None:
         try:
-            self.run()
-        except Exception:
-            # Never log the exception: it could echo a recipient or link. The record stays for the reconciler.
-            logger.error("deferred email submission failed")
+            _submit_all(pending)
+        except BaseException:
+            # Interrupted mid-call: _submit already recorded unknown / interrupted. The thread ends either way.
+            logger.warning("deferred email submission interrupted")
         finally:
             connection.close()
             with _background_lock:
@@ -87,11 +108,31 @@ _background_threads: list[threading.Thread] = []
 
 
 def join_background_submissions(timeout: float = 10.0) -> None:
-    """Wait for submissions started by ``run_in_background`` (graceful shutdown, tests)."""
+    """Wait for submissions started by ``run_in_background`` (tests; the interpreter does it at exit)."""
     with _background_lock:
         threads = list(_background_threads)
     for thread in threads:
         thread.join(timeout)
+
+
+def _submit_all(pending: list[tuple[Any, EmailMessage]]) -> None:
+    for delivery_id, message in pending:
+        try:
+            _submit(delivery_id, message)
+        except Exception:
+            # _submit only raises for what it cannot classify; never log it (it could echo a recipient or link).
+            logger.error("email delivery %s: submission failed unexpectedly", delivery_id)
+
+
+def _settle_not_submitted(delivery_ids) -> None:
+    """Record that these deliveries were never submitted (no free slot); the best effort of a closing response."""
+    try:
+        EmailDelivery.objects.filter(pk__in=delivery_ids, status=Status.PENDING).update(
+            status=Status.FAILED, error_class="not_submitted", completed_at=timezone.now()
+        )
+    except DatabaseError:
+        pass  # stays pending; reconcile_stale_deliveries settles it the same way
+    logger.warning("email deliveries not submitted: no free background slot")
 
 
 def queue_email(
@@ -112,9 +153,9 @@ def queue_email(
     if not connection.in_atomic_block:
         raise EmailDeliveryError("queue_email must run inside the domain transaction (transaction.atomic()).")
     delivery = EmailDelivery.objects.create(template=template, subject_type=subject_type, subject_id=subject_id)
-    submission = partial(_submit, delivery.pk, message)
     # robust=True: even an unforeseen error here must not skip other on_commit callbacks.
-    transaction.on_commit(submission if defer is None else partial(defer.add, submission), robust=True)
+    callback = partial(_submit, delivery.pk, message) if defer is None else partial(defer.add, delivery.pk, message)
+    transaction.on_commit(callback, robust=True)
     return delivery
 
 

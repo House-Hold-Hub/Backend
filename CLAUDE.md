@@ -152,7 +152,7 @@ previous address inside its transaction. Bearer
 issuance and consumption lock the account row first (`verification.lock_account`), then the bearer row.
 Password recovery (`password_recovery.py`) follows the same bearer rules with `PasswordResetBearer`:
 `requestPasswordReset` queues its email with `queue_email(..., defer=DeferredSubmissions())` and the view's
-`DeferredWorkResponse.close()` starts its submission on a background thread after the response (never inside the request or its worker), pads the response to
+`DeferredWorkResponse.close()` starts its submission on a bounded (`EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]`), non-daemon background thread after the response (never inside the request or its worker; overflow is recorded `not_submitted`, not queued), pads the response to
 `AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS`, and skips unknown, disabled and passwordless accounts silently;
 `resetPassword` and `changePassword` fire allauth `password_reset` / `password_changed` inside their transaction for
 the revocation matrix, and a change supersedes any outstanding reset bearer. Request

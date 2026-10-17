@@ -111,6 +111,9 @@ def delivery_settings() -> dict[str, Any]:
         raise ImproperlyConfigured(f"EMAIL_DELIVERY['TIMEOUT_SECONDS'] must be in (0, {MAX_TIMEOUT_SECONDS}].")
     if config["STALE_AFTER_SECONDS"] <= timeout:
         raise ImproperlyConfigured("EMAIL_DELIVERY['STALE_AFTER_SECONDS'] must exceed the provider timeout.")
+    limit = config["MAX_BACKGROUND_SUBMISSIONS"]
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ImproperlyConfigured("EMAIL_DELIVERY['MAX_BACKGROUND_SUBMISSIONS'] must be a positive integer.")
     return config
 
 
