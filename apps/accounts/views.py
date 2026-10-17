@@ -22,8 +22,15 @@ Security properties (ADR-011, ADR-013, ADR-015, ADR-016):
   (ADR-016: 5 minutes) for both the request and the verification, and the verification must happen in the
   session that requested the change. Completing it rotates that session, revokes all others and notifies
   the previous address after the commit.
+- ``requestPasswordReset`` answers 202 with one fixed body for every valid address, after a minimum duration, and
+  its email (existing accounts only) is submitted to the provider after the response was sent, on its own thread, so neither the
+  body, the status nor the timing reveals whether an account exists or how the provider answered.
+  ``resetPassword`` consumes the one-time bearer and revokes every session; ``changePassword`` verifies the
+  current password, rotates the current session and revokes the others (``password_recovery.py``).
 - Every response of these operations is ``Cache-Control: private, no-store``.
 """
+
+import time
 
 from allauth.account.models import EmailAddress
 from django.contrib.auth import logout
@@ -39,12 +46,17 @@ from rest_framework.response import Response
 from apps.api.errors import Conflict
 from apps.api.views import ApiView
 from apps.email_delivery.models import EmailDelivery
+from apps.email_delivery.service import DeferredSubmissions
 from apps.ratelimit import limiter
 
 from .email_change import complete_primary_email_change, request_primary_email_change
 from .models import User
+from .password_recovery import change_password, pad_response, request_password_reset, reset_password
 from .serializers import (
     LoginSerializer,
+    PasswordChangeSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
     PrimaryEmailChangeSerializer,
     SignupSerializer,
     VerifierSerializer,
@@ -56,6 +68,7 @@ from .verification import EmailAlreadyVerified, issue_email_verification, verify
 
 PASSWORD_BACKEND = "django.contrib.auth.backends.ModelBackend"
 NO_STORE = "private, no-store"
+RESET_REQUESTED_MESSAGE = "If an account exists for this address, a password reset email is on its way."
 
 
 class EmailAlreadyRegistered(Conflict):
@@ -67,6 +80,23 @@ class AuthView(ApiView):
         response = super().finalize_response(request, response, *args, **kwargs)
         response["Cache-Control"] = NO_STORE
         return response
+
+
+class DeferredWorkResponse(Response):
+    """A response whose ``deferred`` work starts when the server closes it, after the body was handed over.
+
+    The work runs on its own thread, so the web worker is free for the next request at once.
+    """
+
+    def __init__(self, *args, deferred: DeferredSubmissions, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.deferred = deferred
+
+    def close(self):
+        try:
+            self.deferred.run_in_background()
+        finally:
+            super().close()
 
 
 class CsrfTokenView(AuthView):
@@ -235,4 +265,75 @@ class VerifyPrimaryEmailChangeView(AuthView):
         serializer = VerifierSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         complete_primary_email_change(request, request.user, serializer.validated_data["verifier"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class RequestPasswordResetView(AuthView):
+    """``requestPasswordReset``: 202 with one fixed acknowledgement for every valid address; 400; 429.
+
+    The per-address limit counts the submitted address whether or not an account exists. Unknown, disabled
+    and passwordless (Google-only) accounts get the same response as an eligible one and no email. The
+    delivery of an eligible account is submitted after the response (a provider failure or delay is
+    invisible here and recorded on the delivery), and the response never comes sooner than
+    ``AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS``. Every valid request, eligible or not, reserves one background slot
+    before touching any account and holds it for the same fixed time (``DeferredSubmissions(uniform=True)``), so
+    slot contention between callers cannot reveal which addresses have accounts, and a request refused for lack
+    of a slot changes nothing (an earlier reset link stays usable).
+    """
+
+    permission_classes = [AllowAny]
+    allow_unverified = True
+
+    def post(self, request):
+        started = time.monotonic()
+        limiter.consume("password_reset_ip", request=request)
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+        limiter.consume("password_reset_email", email=email)
+        deferred = DeferredSubmissions(uniform=True)
+        # Admission comes first and is the same for every address: a refused request changes nothing, so it
+        # cannot supersede a link the account already holds. (Accounts, eligible or not, are only looked at
+        # once a slot is reserved.)
+        if deferred.reserve():
+            try:
+                request_password_reset(request, email, deferred)
+            except BaseException:
+                deferred.cancel()
+                raise
+        pad_response(started)
+        return DeferredWorkResponse(
+            {"message": RESET_REQUESTED_MESSAGE}, status=status.HTTP_202_ACCEPTED, deferred=deferred
+        )
+
+
+class ResetPasswordView(AuthView):
+    """``resetPassword``: 204; 400 for a malformed body, a weak password or any unusable bearer; 409; 429.
+
+    Public: the bearer is the credential, and it never logs anyone in. Success revokes every session of the
+    account, the caller's own included.
+    """
+
+    permission_classes = [AllowAny]
+    allow_unverified = True
+
+    def post(self, request):
+        limiter.consume("reset_password_ip", request=request)
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reset_password(request, serializer.validated_data["verifier"], serializer.validated_data["new_password"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ChangePasswordView(AuthView):
+    """``changePassword``: 204 with a rotated session cookie; 400; 401; 409 without a current password.
+
+    The contract declares no 429 for it, so ADR-016 adds no limit.
+    """
+
+    def post(self, request):
+        serializer = PasswordChangeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        change_password(request, request.user, data["current_password"], data["new_password"])
         return Response(status=status.HTTP_204_NO_CONTENT)

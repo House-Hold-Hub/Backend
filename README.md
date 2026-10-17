@@ -235,6 +235,42 @@ one (unknown, expired, consumed, superseded) gets the same response.
 Rate limits (ADR-016) are `verify_email_ip`, `resend_email_verification_user`, `email_change_user`,
 `email_change_email` and `verify_email_change_user` in `AUTH_RATE_LIMITS`.
 
+### Password recovery and change (`apps/accounts/password_recovery.py`, Backend#36)
+
+`requestPasswordReset`, `resetPassword` and `changePassword` (`/api/v1/auth/forgot-password`, `reset-password`,
+`change-password`). The reset bearer is a separate `PasswordResetBearer` lifecycle: 256 bits, only its SHA-256 digest
+stored, 1 hour (`AUTH_PASSWORD_RESET_LIFETIME_SECONDS`), mailed only in the URI fragment of
+`FRONTEND_PASSWORD_RESET_PATH` and sent back in the POST body. A new request, a reset and a password change all
+supersede an earlier bearer; consumption is atomic with the password change under the account and bearer row locks.
+
+- **`requestPasswordReset`** (public) answers `202` with one fixed body for every syntactically valid address. Unknown,
+  disabled and passwordless (Google-only) accounts get no bearer and no email. The email of an eligible account (an
+  unverified one too: it proves mailbox ownership) is queued with the bearer and submitted after the HTTP response
+  was closed, on its own thread and connection (`DeferredSubmissions`, still commit -> bounded provider call ->
+  durable status of ADR-015), so a slow or failing provider neither delays the caller nor keeps a web worker busy.
+  Background capacity is bounded per process by `EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]` (4) with no queue, and
+  it is *uniform*: every valid request, eligible or not, reserves one slot **before** the address is even looked up
+  and holds it for exactly `EMAIL_DELIVERY["BACKGROUND_SLOT_SECONDS"]` (6 s, above the provider timeout) whatever
+  the provider's latency. Otherwise one caller could occupy slots to learn, from whether its own email was submitted,
+  whether another address has an account. A request refused for lack of a slot changes nothing: no lookup, no bearer
+  issued or superseded, no delivery, so a link the account already holds stays usable. An admitted request rotates
+  the bearer as ADR-016 requires. The reservation is released if the request fails and if its response is never
+  closed. The threads are
+  non-daemon (a graceful shutdown waits at most the hold), and a killed process (or a thread that cannot start) after
+  the commit leaves `submitting` / `pending`, which `reconcile_email_deliveries` settles honestly; the user requests again. The response never comes sooner than
+  `AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS` to cover the database work only an existing account does. A failed
+  delivery is recovered by requesting again. Limits: `password_reset_ip` (20/h) and `password_reset_email` (3/h, counted
+  for unknown addresses too, same `429`).
+- **`resetPassword`** (public) validates the ADR-016 policy (a policy failure is a retryable `400` field error and leaves
+  the bearer usable), consumes the bearer, sets the password and revokes every session through allauth
+  `password_reset`, the caller's own included. Every unusable bearer (unknown, expired, consumed, superseded, another
+  purpose, address changed, disabled account) is the same `400`; an account with no usable password is `409`. It never
+  logs anyone in and never verifies the email. Limit: `reset_password_ip` (20 per 5 min).
+- **`changePassword`** verifies the current password (a wrong one is `400` on `current_password`, so the client does not
+  mistake it for an expired session; an account without a usable password is `409`), applies the new one under the
+  account lock (a concurrent change makes the current password stale) and rotates the current session while
+  revoking the others (allauth `password_changed`). The contract declares no `429`, so it has no limit (ADR-016).
+
 ### Rate limiting (`apps/ratelimit`, ADR-016)
 
 `limiter.consume(action, ...)` takes a slot of each rate in `AUTH_RATE_LIMITS` with a single

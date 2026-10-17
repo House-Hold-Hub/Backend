@@ -57,6 +57,38 @@ class PrimaryEmailChangeSerializer(StrictSerializer):
         return User.objects.normalize_email(value)
 
 
+class PasswordResetRequestSerializer(StrictSerializer):
+    """``PasswordResetRequest``. The address is normalized like every account email."""
+
+    email = StrictEmailField(max_length=254)
+
+    def validate_email(self, value):
+        return User.objects.normalize_email(value)
+
+
+def _validate_policy(value):
+    """Length and common-password rules, which need no account; similarity is checked once the account is known."""
+    try:
+        password_validation.validate_password(value)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError(list(exc.messages)) from exc
+    return value
+
+
+class PasswordResetConfirmSerializer(StrictSerializer):
+    """``PasswordResetConfirmRequest``. The bearer and the password are never trimmed, echoed, stored or logged."""
+
+    verifier = StrictCharField(trim_whitespace=False, write_only=True)
+    new_password = StrictCharField(trim_whitespace=False, write_only=True, validators=[_validate_policy])
+
+
+class PasswordChangeSerializer(StrictSerializer):
+    """``PasswordChangeRequest``. No bounds on the current password, so a policy change never locks it out."""
+
+    current_password = StrictCharField(trim_whitespace=False, write_only=True)
+    new_password = StrictCharField(trim_whitespace=False, write_only=True, validators=[_validate_policy])
+
+
 def user_response(user: User) -> dict:
     """``UserResponse``."""
     return {

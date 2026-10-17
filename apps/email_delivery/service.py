@@ -10,7 +10,11 @@ domain flow, and ``reconcile_stale_deliveries`` settles records an interrupted p
 
 import datetime
 import logging
+import threading
+import time
+import weakref
 from functools import partial
+from typing import Any
 
 from django.db import DatabaseError, connection, transaction
 from django.db.models import Q
@@ -35,20 +39,175 @@ class EmailDeliveryError(Exception):
     """The email cannot be queued safely (programming error, e.g. outside a transaction)."""
 
 
+class DeferredSubmissions:
+    """Post-commit submissions that run after the HTTP response was handed to the server.
+
+    For an operation whose response time must not reveal whether a provider call happened (an
+    enumeration-safe password-reset request): ``queue_email(..., defer=...)`` hands the committed delivery
+    here instead of calling the provider inside the request, and the response's ``close()`` calls
+    ``run_in_background``. The sequence is still commit -> bounded provider call -> durable status (ADR-015);
+    only the request no longer waits for it, and neither does its web worker.
+
+    The call runs on a short-lived, non-daemon thread with its own database connection, which is closed as soon
+    as the submission is done. Concurrency is bounded per process by ``EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]``
+    and there is no queue: a submission that finds no free slot is dropped and its delivery stays ``pending``
+    (nothing was sent; ``reconcile_stale_deliveries`` settles it as ``failed`` / ``not_submitted``).
+
+    ``uniform=True`` makes the slot existence-independent: the caller reserves a slot for *every* valid request,
+    including those with nothing to submit (unknown, disabled or passwordless addresses), and each reserved
+    request holds its slot for exactly ``EMAIL_DELIVERY["BACKGROUND_SLOT_SECONDS"]`` (longer than the provider
+    timeout, so a submission always fits) however fast or slow the provider was. Admission and occupancy then
+    depend only on how many valid requests are in flight, never on which addresses have accounts, so one caller
+    cannot learn about another address from whether its own email was submitted.
+
+    ``reserve()`` takes the slot *before* the caller changes any state. A request that is refused then does
+    nothing at all, so refusing an email never costs the account a credential it already holds (a reset
+    request that supersedes the earlier bearer and is then dropped would). The reservation is consumed by
+    ``run_in_background``, given back by ``cancel()`` when the request fails, and by garbage collection if the
+    response is never closed; without ``reserve()``, ``run_in_background`` reserves for itself.
+    """
+
+    def __init__(self, *, uniform: bool = False) -> None:
+        self._uniform = uniform
+        self._pending: list[tuple[Any, EmailMessage]] = []
+        self._finalizer: weakref.finalize | None = None
+        self._attempted = False
+
+    @property
+    def _reserved(self) -> bool:
+        return self._finalizer is not None and self._finalizer.alive
+
+    def reserve(self) -> bool:
+        """Take one background slot now; ``False`` (and nothing reserved) when none is free. Idempotent."""
+        if self._reserved:
+            return True
+        self._attempted = True
+        if not _take_slot():
+            return False
+        self._finalizer = weakref.finalize(self, _release_slot)
+        return True
+
+    def cancel(self) -> None:
+        """Give back a reservation that will not be used; harmless without one."""
+        if self._finalizer is not None:
+            self._finalizer()
+
+    def add(self, delivery_id, message: EmailMessage) -> None:
+        self._pending.append((delivery_id, message))
+
+    def run(self) -> None:
+        """Submit each delivery once, on the calling thread; idempotent. A failure of one never skips another."""
+        pending, self._pending = self._pending, []
+        _submit_all(pending)
+
+    def run_in_background(self) -> None:
+        """Submit on a bounded background thread; returns at once and never raises."""
+        pending, self._pending = self._pending, []
+        if not pending and not self._uniform:
+            self.cancel()
+            return
+        # A refusal (or a cancel) stands: a slot that frees up later is not taken for a request already turned away.
+        if not self._reserved and (self._attempted or not self.reserve()):
+            # Identical for every kind of request; the deliveries (if any) stay pending for the reconciler.
+            logger.warning("deferred email submission dropped: no free background slot")
+            return
+        assert self._finalizer is not None
+        self._finalizer.detach()  # the thread owns the slot from here
+        hold = delivery_settings()["BACKGROUND_SLOT_SECONDS"] if self._uniform else 0.0
+        thread = threading.Thread(target=_run_and_close, args=(pending, hold), name="deferred-email-submission")
+        with _background_lock:
+            _background_threads.append(thread)
+        try:
+            thread.start()
+        except Exception:  # e.g. the process cannot start another thread
+            with _background_lock:
+                _background_threads.remove(thread)
+            _release_slot()
+            logger.warning("deferred email submission dropped: could not start a thread")
+
+
+_background_lock = threading.Lock()
+_background_threads: list[threading.Thread] = []
+_slots_taken = 0  # reserved or running; bounded by MAX_BACKGROUND_SUBMISSIONS
+
+
+def _take_slot() -> bool:
+    global _slots_taken
+    with _background_lock:
+        if _slots_taken >= delivery_settings()["MAX_BACKGROUND_SUBMISSIONS"]:
+            return False
+        _slots_taken += 1
+        return True
+
+
+def _release_slot() -> None:
+    global _slots_taken
+    with _background_lock:
+        _slots_taken -= 1
+
+
+def slots_in_use() -> int:
+    with _background_lock:
+        return _slots_taken
+
+
+def _run_and_close(pending: list[tuple[Any, EmailMessage]], hold: float) -> None:
+    started = time.monotonic()
+    try:
+        try:
+            _submit_all(pending)
+        except BaseException:
+            # Interrupted mid-call: _submit already recorded unknown / interrupted. The thread ends either way.
+            logger.warning("deferred email submission interrupted")
+        finally:
+            connection.close()  # as soon as the work is done, not after the hold
+        remaining = started + hold - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+    finally:
+        with _background_lock:
+            _background_threads.remove(threading.current_thread())
+        _release_slot()
+
+
+def join_background_submissions(timeout: float = 10.0) -> None:
+    """Wait for submissions started by ``run_in_background`` (tests; the interpreter does it at exit)."""
+    with _background_lock:
+        threads = list(_background_threads)
+    for thread in threads:
+        thread.join(timeout)
+
+
+def _submit_all(pending: list[tuple[Any, EmailMessage]]) -> None:
+    for delivery_id, message in pending:
+        try:
+            _submit(delivery_id, message)
+        except Exception:
+            # _submit only raises for what it cannot classify; never log it (it could echo a recipient or link).
+            logger.error("email delivery %s: submission failed unexpectedly", delivery_id)
+
+
 def queue_email(
-    message: EmailMessage, *, template: str, subject_type: str = "", subject_id=None
+    message: EmailMessage,
+    *,
+    template: str,
+    subject_type: str = "",
+    subject_id=None,
+    defer: DeferredSubmissions | None = None,
 ) -> EmailDelivery:
     """Record a delivery in the current domain transaction and submit it only after that commit.
 
     ``template``, ``subject_type`` and ``subject_id`` are non-secret identifiers (for example
     ``"email-verification"``, ``"invitation"`` and the invitation's UUID). The message is held in memory
-    for the post-commit call only.
+    for the post-commit call only. With ``defer`` the committed submission waits in it until the caller
+    runs it after the response (``DeferredSubmissions``).
     """
     if not connection.in_atomic_block:
         raise EmailDeliveryError("queue_email must run inside the domain transaction (transaction.atomic()).")
     delivery = EmailDelivery.objects.create(template=template, subject_type=subject_type, subject_id=subject_id)
     # robust=True: even an unforeseen error here must not skip other on_commit callbacks.
-    transaction.on_commit(partial(_submit, delivery.pk, message), robust=True)
+    callback = partial(_submit, delivery.pk, message) if defer is None else partial(defer.add, delivery.pk, message)
+    transaction.on_commit(callback, robust=True)
     return delivery
 
 

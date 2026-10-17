@@ -149,7 +149,13 @@ transaction; `verifyEmail` consumes it by `bearer_digest`. The primary-email cha
 (`sessions.session_binding`, a keyed digest stored on the row: never write request-scoped bindings into the session,
 whose last concurrent save wins), and completes with allauth `email_changed` and a post-commit notice to the
 previous address inside its transaction. Bearer
-issuance and consumption lock the account row first (`verification.lock_account`), then the bearer row. Request
+issuance and consumption lock the account row first (`verification.lock_account`), then the bearer row.
+Password recovery (`password_recovery.py`) follows the same bearer rules with `PasswordResetBearer`:
+`requestPasswordReset` queues its email with `queue_email(..., defer=DeferredSubmissions())` and the view's
+`DeferredWorkResponse.close()` starts its submission on a bounded (`EMAIL_DELIVERY["MAX_BACKGROUND_SUBMISSIONS"]`), non-daemon background thread after the response (never inside the request or its worker). The view uses `DeferredSubmissions(uniform=True)`: every valid request, existing account or not, calls `reserve()` *before* any lookup or write, holds the slot for the same `BACKGROUND_SLOT_SECONDS` and is refused alike when none is free (slot contention must never depend on existence); a refused request changes nothing, so it can never supersede a reset link the account already holds. Cancel the reservation if the request fails, pads the response to
+`AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS`, and skips unknown, disabled and passwordless accounts silently;
+`resetPassword` and `changePassword` fire allauth `password_reset` / `password_changed` inside their transaction for
+the revocation matrix, and a change supersedes any outstanding reset bearer. Request
 serializers derive from `api.serializers.StrictSerializer` (unknown fields, non-strings and unpaired surrogates are 400).
 
 ### Tests

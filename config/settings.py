@@ -139,17 +139,25 @@ AUTH_RATE_LIMITS = {
     "email_change_user": (("user", 5, 60 * 60),),
     "email_change_email": (("email", 3, 60 * 60),),
     "verify_email_change_user": (("user", 10, 5 * 60),),
+    "password_reset_ip": (("ip", 20, 60 * 60),),
+    "password_reset_email": (("email", 3, 60 * 60),),
+    "reset_password_ip": (("ip", 20, 5 * 60),),
 }
 # Proxies Infrastructure puts in front of the service (0: use the peer address, ignore X-Forwarded-For).
 RATE_LIMIT_TRUSTED_PROXY_COUNT = 0
 RATE_LIMIT_IPV6_PREFIX = 64
 
-# ADR-016 one-time bearer lifetimes: initial email verification (signup, resend) and primary-email change.
+# ADR-016 one-time bearer lifetimes: initial email verification (signup, resend), primary-email change and password reset.
 AUTH_EMAIL_VERIFICATION_LIFETIME_SECONDS = 24 * 60 * 60
 AUTH_PRIMARY_EMAIL_CHANGE_LIFETIME_SECONDS = 60 * 60
+AUTH_PASSWORD_RESET_LIFETIME_SECONDS = 60 * 60
+# requestPasswordReset answers no sooner than this after it started, whether or not the account exists, so the
+# database work only an existing account does is not observable (the provider call runs after the response).
+AUTH_PASSWORD_RESET_MIN_RESPONSE_SECONDS = 0.5
 # Frontend routes that read those bearers from the URI fragment (same origin as the API).
 FRONTEND_EMAIL_VERIFICATION_PATH = "/verify-email"
 FRONTEND_PRIMARY_EMAIL_CHANGE_PATH = "/verify-email-change"
+FRONTEND_PASSWORD_RESET_PATH = "/reset-password"
 
 # ADR-011: database-backed sessions, 14-day expiry, HttpOnly session cookie,
 # readable CSRF cookie (sent back as X-CSRFToken), SameSite=Lax for OAuth redirects.
@@ -174,6 +182,12 @@ EMAIL_DELIVERY = {
     "TIMEOUT_SECONDS": 5.0,
     # A pending/submitting record older than this was left by an interrupted process (reconciler).
     "STALE_AFTER_SECONDS": 300,
+    # Most post-response submissions (enumeration-safe password reset) one process runs at once, each on a thread
+    # with its own database connection; beyond that the submission is skipped and recorded as not submitted.
+    "MAX_BACKGROUND_SUBMISSIONS": 4,
+    # How long each such request holds its slot, whether or not it had anything to submit, so that slot
+    # contention cannot reveal which addresses have accounts. Must exceed TIMEOUT_SECONDS.
+    "BACKGROUND_SLOT_SECONDS": 6.0,
 }
 
 LANGUAGE_CODE = "en-us"
