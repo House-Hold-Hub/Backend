@@ -107,6 +107,10 @@ ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*"]
 ACCOUNT_UNIQUE_EMAIL = True
 ACCOUNT_EMAIL_VERIFICATION = "mandatory"
 ACCOUNT_RATE_LIMITS = False
+# ADR-016 recent reauthentication: an authentication recorded in the current session within 5 minutes.
+# apps.accounts.sessions.recently_authenticated reads it (allauth's own check waives it for social-only
+# accounts, ours never does).
+ACCOUNT_REAUTHENTICATION_TIMEOUT = 5 * 60
 
 # ADR-016 password policy: 15 to 128 Unicode code points, common-password and similarity checks, no
 # composition rules (so no NumericPasswordValidator). Django's default hasher and work factor.
@@ -130,15 +134,22 @@ AUTH_RATE_LIMITS = {
     "signup_email": (("email", 3, 60 * 60),),
     "login_ip": (("ip", 30, 60),),
     "login_failed_email": (("email", 5, 5 * 60),),
+    "verify_email_ip": (("ip", 20, 5 * 60),),
+    "resend_email_verification_user": (("user", 1, 2 * 60), ("user", 5, 60 * 60)),
+    "email_change_user": (("user", 5, 60 * 60),),
+    "email_change_email": (("email", 3, 60 * 60),),
+    "verify_email_change_user": (("user", 10, 5 * 60),),
 }
 # Proxies Infrastructure puts in front of the service (0: use the peer address, ignore X-Forwarded-For).
 RATE_LIMIT_TRUSTED_PROXY_COUNT = 0
 RATE_LIMIT_IPV6_PREFIX = 64
 
-# ADR-016 one-time bearer lifetime for the initial email verification sent at signup (Backend#35 verifies).
+# ADR-016 one-time bearer lifetimes: initial email verification (signup, resend) and primary-email change.
 AUTH_EMAIL_VERIFICATION_LIFETIME_SECONDS = 24 * 60 * 60
-# Frontend route that reads the verification bearer from the URI fragment (same origin as the API).
+AUTH_PRIMARY_EMAIL_CHANGE_LIFETIME_SECONDS = 60 * 60
+# Frontend routes that read those bearers from the URI fragment (same origin as the API).
 FRONTEND_EMAIL_VERIFICATION_PATH = "/verify-email"
+FRONTEND_PRIMARY_EMAIL_CHANGE_PATH = "/verify-email-change"
 
 # ADR-011: database-backed sessions, 14-day expiry, HttpOnly session cookie,
 # readable CSRF cookie (sent back as X-CSRFToken), SameSite=Lax for OAuth redirects.

@@ -205,7 +205,32 @@ change. Expired rows are removed by the scheduled `python manage.py clearsession
 - **Login** uses Django's `ModelBackend` (hashes for unknown addresses too, refuses disabled accounts). An
   unverified account gets a restricted session: the verification gate keeps everything but the pre-verification
   lifecycle closed.
-- **Logout** flushes the session, invitation intent included. Verifying and resending email are Backend#35.
+- **Logout** flushes the session, invitation intent included.
+
+### Email verification and primary-email change (`apps/accounts/verification.py`, `email_change.py`, Backend#35)
+
+Two separate lifecycles with separate bearer tables, so neither accepts the other's bearer. Bearers carry 256 bits,
+are stored only as SHA-256 digests, travel only in the email's URI fragment and the POST body, and every unusable
+one (unknown, expired, consumed, superseded) gets the same response.
+
+- **`verifyEmail`** (public, `POST /api/v1/auth/email/verify`) consumes an `EmailVerificationBearer` (24 h) and marks
+  the allauth `EmailAddress` verified in one transaction, under the account and bearer row locks, so a bearer is
+  consumed exactly once. Unusable bearers are 400, an already verified account 409. The bearer never logs anyone in:
+  only when the browser's own session is that account's restricted session is it rotated (keeping its invitation
+  intent); a cross-device verification creates no session and touches no other.
+- **`resendEmailVerification`** (restricted sessions allowed) issues a new bearer, superseding the old one, and a new
+  delivery whose honest status it returns; a failed delivery is recovered by resending. Verified accounts get 409.
+- **`requestPrimaryEmailChange`** and **`verifyPrimaryEmailChange`** (verified accounts only) both need an
+  authentication in the current session within `ACCOUNT_REAUTHENTICATION_TIMEOUT` (ADR-016: 5 minutes; no exemption
+  for passwordless accounts), else 403. The request stores a `PrimaryEmailChange` (1 h), supersedes any earlier one,
+  emails the new address (`FRONTEND_PRIMARY_EMAIL_CHANGE_PATH`) and binds the change to the session; the current
+  address stays in effect and the new one is not reserved. A current or used address is 409. The verification must
+  come from the same session; in one transaction it consumes the bearer, makes the new address the only, verified
+  primary `EmailAddress`, rotates the current session and revokes all others (allauth `email_changed`). Anything
+  else, including an address taken meanwhile, is 409 and changes nothing.
+
+Rate limits (ADR-016) are `verify_email_ip`, `resend_email_verification_user`, `email_change_user`,
+`email_change_email` and `verify_email_change_user` in `AUTH_RATE_LIMITS`.
 
 ### Rate limiting (`apps/ratelimit`, ADR-016)
 

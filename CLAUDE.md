@@ -142,9 +142,13 @@ Signup and login call `ratelimit.limiter.consume` *outside* the domain transacti
 counts) with actions from `AUTH_RATE_LIMITS`; never count through Django's cache API or allauth's limiter (off: not
 atomic, unkeyed hashes, 400 instead of 429). Login reserves a failure slot before checking the password and clears it on
 success. Both establish the session with `sessions.establish_session`, which keeps only a valid invitation intent.
-Signup issues the verification bearer through `verification.issue_email_verification` inside its transaction;
-Backend#35 consumes `EmailVerificationBearer` by `bearer_digest`. Request serializers derive from
-`api.serializers.StrictSerializer` (unknown fields, non-strings and unpaired surrogates are 400).
+Signup and resend issue the verification bearer through `verification.issue_email_verification` inside their
+transaction; `verifyEmail` consumes it by `bearer_digest`. The primary-email change (`email_change.py`) has its own
+`PrimaryEmailChange` bearers, requires `sessions.recently_authenticated` (never allauth's
+`did_recently_authenticate`, which waives the check for passwordless accounts) and the requesting session
+(`PRIMARY_EMAIL_CHANGE_SESSION_KEY`), and completes with allauth `email_changed` inside its transaction. Bearer
+issuance and consumption lock the account row first (`verification.lock_account`), then the bearer row. Request
+serializers derive from `api.serializers.StrictSerializer` (unknown fields, non-strings and unpaired surrogates are 400).
 
 ### Tests
 
